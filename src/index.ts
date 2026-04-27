@@ -101,4 +101,11 @@ app.get('/b50', async (c) => {
   return c.json({ totalRating, newScores, oldScores })
 })
 
+app.get('/test-insert', async (c) => {
+  const result = await db.query(`
+  CREATE song:testtest SET title = 'test', genre = 'test';
+  `)
+  console.log('test insert result:', JSON.stringify(result))
+  return c.json(result)
+})
 export default app

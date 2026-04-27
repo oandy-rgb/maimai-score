@@ -56,7 +56,7 @@
         console.log(allScores)
 
         // 送到 Hono API
-        await fetch('http://localhost:3000/api/scores/sync', {
+        await fetch('https://api.o-andy.com/api/scores/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(allScores),
