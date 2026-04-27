@@ -59,11 +59,13 @@ app.post('/auth/google', async (c) => {
       .setExpirationTime('30d')
       .sign(JWT_SECRET)
 
+    console.log(`✅ Google 登入成功：${email}，player: ${playerId}`)
     return c.json({ token, email })
   } catch (e) {
     console.error('Google auth error:', e)
     return c.json({ error: 'Invalid token' }, 401)
   }
+
 })
 
 app.get('/test', async (c) => {
