@@ -3,6 +3,12 @@ import { connectDB, db } from './db'
 import { initSchema } from './schema'
 import { cors } from 'hono/cors'
 import { RecordId } from 'surrealdb'
+import { OAuth2Client } from 'google-auth-library'
+import { SignJWT } from 'jose'
+
+const GOOGLE_CLIENT_ID = '785041222690-7l200uqtgsoio0bugjd2a1bh8bti629j.apps.googleusercontent.com'
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret-change-in-prod')
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 
 const app = new Hono()
 connectDB().then(() => initSchema())
@@ -26,6 +32,38 @@ function calcRating(cc: number, achievement: number): number {
 
 app.get('/health', async (c) => {
   return c.json({ status: 'ok', db: 'connected' })
+})
+
+app.post('/auth/google', async (c) => {
+  const { idToken } = await c.req.json()
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    })
+    const payload = ticket.getPayload()!
+    const email = payload.email!
+    const name = payload.name ?? email
+
+    const existing = await db.query<any[]>(`SELECT * FROM player WHERE email = $email LIMIT 1`, { email })
+    let playerId: string
+    if (existing[0]?.length > 0) {
+      playerId = existing[0][0].id
+    } else {
+      const created = await db.query<any[]>(`CREATE player SET email = $email, username = $name`, { email, name })
+      playerId = created[0][0].id
+    }
+
+    const token = await new SignJWT({ playerId, email })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('30d')
+      .sign(JWT_SECRET)
+
+    return c.json({ token, email })
+  } catch (e) {
+    console.error('Google auth error:', e)
+    return c.json({ error: 'Invalid token' }, 401)
+  }
 })
 
 app.get('/test', async (c) => {
@@ -106,11 +144,6 @@ app.get('/b50', async (c) => {
     .slice(0, 35)
   const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
   return c.json({ totalRating, newScores, oldScores })
-})
-
-app.get('/test-insert', async (c) => {
-  const result = await db.query(`CREATE song:testtest SET title = 'test', genre = 'test';`)
-  return c.json(result)
 })
 
 export default app
