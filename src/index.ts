@@ -31,49 +31,45 @@ app.get('/scores', async (c) => {
 
 app.post('/api/scores/sync', async (c) => {
   const scores = await c.req.json()
+  let success = 0
+  let failed = 0
   for (const score of scores) {
     const songKey = `${score.title}_${score.chart_type}`
-    await db.query(`
-    INSERT INTO song (id, title, genre)
-    VALUES ($id, $title, $genre)
-    ON DUPLICATE KEY UPDATE title = $title
-    `, {
-      id: new RecordId('song', songKey),
-                   title: score.title,
-                   genre: score.genre ?? '',
-    })
-    await db.query(`
-    INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
-    VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
-    ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
-    `, {
-      player: new RecordId('player', 'test'),
-                   song: new RecordId('song', songKey),
-                   difficulty: score.difficulty,
-                   chart_type: score.chart_type,
-                   level: score.level,
-                   achievement: score.achievement,
-    })
+    try {
+      const r1 = await db.query(`
+      INSERT INTO song (id, title, genre)
+      VALUES ($id, $title, $genre)
+      ON DUPLICATE KEY UPDATE title = $title
+      `, {
+        id: new RecordId('song', songKey),
+                                title: score.title,
+                                genre: score.genre ?? '',
+      })
+      console.log('song:', JSON.stringify(r1))
+
+      const r2 = await db.query(`
+      INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
+      VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
+      ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
+      `, {
+        player: new RecordId('player', 'test'),
+                                song: new RecordId('song', songKey),
+                                difficulty: score.difficulty,
+                                chart_type: score.chart_type,
+                                level: score.level,
+                                achievement: score.achievement,
+      })
+      console.log('score:', JSON.stringify(r2))
+      success++
+    } catch(e) {
+      console.error('error:', e)
+      failed++
+    }
   }
-  console.log(`✅ 存入 ${scores.length} 筆成績`)
-  return c.json({ ok: true, count: scores.length })
+  console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
+  return c.json({ ok: true, success, failed })
 })
 
-function calcRating(cc: number, achievement: number): number {
-  const a = Math.min(achievement, 100.5)
-  let multiplier: number
-  if (a >= 100.5) multiplier = 22.4
-    else if (a >= 100.0) multiplier = 21.6
-      else if (a >= 99.5) multiplier = 21.1
-        else if (a >= 99.0) multiplier = 20.8
-          else if (a >= 98.0) multiplier = 20.3
-            else if (a >= 97.0) multiplier = 20.0
-              else if (a >= 94.0) multiplier = 16.8
-                else if (a >= 90.0) multiplier = 15.2
-                  else if (a >= 80.0) multiplier = 13.6
-                    else multiplier = 0
-                      return Math.floor(cc * multiplier * a / 100)
-}
 
 app.get('/b50', async (c) => {
   const result = await db.query(`
