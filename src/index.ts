@@ -4,8 +4,7 @@ import { initSchema } from './schema'
 import { cors } from 'hono/cors'
 import { RecordId } from 'surrealdb'
 import { OAuth2Client } from 'google-auth-library'
-import { SignJWT } from 'jose'
-import { jwtVerify } from 'jose'
+import { SignJWT, jwtVerify } from 'jose'
 
 const GOOGLE_CLIENT_ID = '785041222690-7l200uqtgsoio0bugjd2a1bh8bti629j.apps.googleusercontent.com'
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret-change-in-prod')
@@ -34,14 +33,15 @@ function calcRating(cc: number, achievement: number): number {
 async function getPlayerFromToken(c: any): Promise<string | null> {
   const auth = c.req.header('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
-    try {
-      const token = auth.slice(7)
-      const { payload } = await jwtVerify(token, JWT_SECRET)
-      return payload.playerId as string
-    } catch {
-      return null
-    }
+  try {
+    const token = auth.slice(7)
+    const { payload } = await jwtVerify(token, JWT_SECRET)
+    return payload.playerId as string
+  } catch {
+    return null
+  }
 }
+
 app.get('/health', async (c) => {
   return c.json({ status: 'ok', db: 'connected' })
 })
@@ -63,7 +63,7 @@ app.post('/auth/google', async (c) => {
       playerId = existing[0][0].id.toString()
     } else {
       const created = await db.query<any[]>(`CREATE player SET email = $email, username = $name`, { email, name })
-      playerId = existing[0][0].id.toString()
+      playerId = created[0][0].id.toString()
     }
 
     const token = await new SignJWT({ playerId, email })
@@ -77,7 +77,6 @@ app.post('/auth/google', async (c) => {
     console.error('Google auth error:', e)
     return c.json({ error: 'Invalid token' }, 401)
   }
-
 })
 
 app.get('/test', async (c) => {
@@ -101,7 +100,6 @@ app.post('/api/scores/sync', async (c) => {
   if (!playerId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
-
   const scores = await c.req.json()
   let success = 0
   let failed = 0
@@ -109,25 +107,25 @@ app.post('/api/scores/sync', async (c) => {
     const songKey = `${score.title}_${score.chart_type}`
     try {
       await db.query(`
-      INSERT INTO song (id, title, genre)
-      VALUES ($id, $title, $genre)
-      ON DUPLICATE KEY UPDATE title = $title
+        INSERT INTO song (id, title, genre)
+        VALUES ($id, $title, $genre)
+        ON DUPLICATE KEY UPDATE title = $title
       `, {
         id: new RecordId('song', songKey),
-                     title: score.title,
-                     genre: score.genre ?? '',
+        title: score.title,
+        genre: score.genre ?? '',
       })
       await db.query(`
-      INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
-      VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
-      ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
+        INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
+        VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
+        ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
-                     song: new RecordId('song', songKey),
-                     difficulty: score.difficulty,
-                     chart_type: score.chart_type,
-                     level: score.level,
-                     achievement: score.achievement,
+        song: new RecordId('song', songKey),
+        difficulty: score.difficulty,
+        chart_type: score.chart_type,
+        level: score.level,
+        achievement: score.achievement,
       })
       success++
     } catch(e) {
@@ -141,33 +139,36 @@ app.post('/api/scores/sync', async (c) => {
 
 app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
+  console.log('b50 playerId:', playerId)
   if (!playerId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
+  const playerKey = playerId.split(':')[1]
+  console.log('b50 playerKey:', playerKey)
 
   const result = await db.query(`
-  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
-  FROM score
-  WHERE chart_constant != NONE
-  AND player = $player
-  ORDER BY achievement DESC
-  `, { player: new RecordId('player', playerId.split(':')[1]) })
+    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
+    FROM score
+    WHERE chart_constant != NONE
+    AND player = $player
+    ORDER BY achievement DESC
+  `, { player: new RecordId('player', playerKey) })
 
   const scores = result[0] as any[]
   const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
   const withRating = scores.map(s => ({
     ...s,
     rating: calcRating(s.chart_constant, s.achievement),
-                                      isNew: NEW_VERSIONS.has(s.version),
+    isNew: NEW_VERSIONS.has(s.version),
   }))
   const newScores = withRating
-  .filter(s => s.isNew)
-  .sort((a, b) => b.rating - a.rating)
-  .slice(0, 15)
+    .filter(s => s.isNew)
+    .sort((a, b) => b.rating - a.rating)
+    .slice(0, 15)
   const oldScores = withRating
-  .filter(s => !s.isNew)
-  .sort((a, b) => b.rating - a.rating)
-  .slice(0, 35)
+    .filter(s => !s.isNew)
+    .sort((a, b) => b.rating - a.rating)
+    .slice(0, 35)
   const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
   return c.json({ totalRating, newScores, oldScores })
 })
