@@ -60,10 +60,10 @@ app.post('/auth/google', async (c) => {
     const existing = await db.query<any[]>(`SELECT * FROM player WHERE email = $email LIMIT 1`, { email })
     let playerId: string
     if (existing[0]?.length > 0) {
-      playerId = existing[0][0].id
+      playerId = existing[0][0].id.toString()
     } else {
       const created = await db.query<any[]>(`CREATE player SET email = $email, username = $name`, { email, name })
-      playerId = created[0][0].id
+      playerId = existing[0][0].id.toString()
     }
 
     const token = await new SignJWT({ playerId, email })
