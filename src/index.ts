@@ -140,27 +140,34 @@ app.post('/api/scores/sync', async (c) => {
 })
 
 app.get('/b50', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
   const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
-    FROM score
-    WHERE chart_constant != NONE
-    ORDER BY achievement DESC
-  `)
+  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
+  FROM score
+  WHERE chart_constant != NONE
+  AND player = $player
+  ORDER BY achievement DESC
+  `, { player: new RecordId('player', playerId.split(':')[1]) })
+
   const scores = result[0] as any[]
   const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
   const withRating = scores.map(s => ({
     ...s,
     rating: calcRating(s.chart_constant, s.achievement),
-    isNew: NEW_VERSIONS.has(s.version),
+                                      isNew: NEW_VERSIONS.has(s.version),
   }))
   const newScores = withRating
-    .filter(s => s.isNew)
-    .sort((a, b) => b.rating - a.rating)
-    .slice(0, 15)
+  .filter(s => s.isNew)
+  .sort((a, b) => b.rating - a.rating)
+  .slice(0, 15)
   const oldScores = withRating
-    .filter(s => !s.isNew)
-    .sort((a, b) => b.rating - a.rating)
-    .slice(0, 35)
+  .filter(s => !s.isNew)
+  .sort((a, b) => b.rating - a.rating)
+  .slice(0, 35)
   const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
   return c.json({ totalRating, newScores, oldScores })
 })
