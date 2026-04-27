@@ -58,7 +58,10 @@
         // 送到 Hono API
         await fetch('https://api.o-andy.com/api/scores/sync', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('session_token') ?? ''}`,
+            },
             body: JSON.stringify(allScores),
         })
 
