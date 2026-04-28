@@ -79,12 +79,6 @@ app.post('/auth/google', async (c) => {
   }
 })
 
-app.get('/test', async (c) => {
-  await db.query('CREATE player:test SET email = "test@test.com", username = "oandy"')
-  const result = await db.query('SELECT * FROM player')
-  return c.json(result)
-})
-
 app.get('/scores', async (c) => {
   const result = await db.query(`
     SELECT id, achievement, chart_type, difficulty, level, updated_at, song.title AS title
@@ -103,21 +97,38 @@ app.post('/api/scores/sync', async (c) => {
   const scores = await c.req.json()
   let success = 0
   let failed = 0
+  let notFound = 0
+
   for (const score of scores) {
-    const songKey = `${score.title}_${score.chart_type}`
     try {
-      // 不再 INSERT song，song 由 import-cc.ts 管理
+      // 查 song 表找對應的 internalId
+      const songResult = await db.query<any[]>(`
+        SELECT id FROM song
+        WHERE title = $title AND chart_type = $chart_type
+        LIMIT 1
+      `, {
+        title: score.title,
+        chart_type: score.chart_type,
+      })
+
+      if (!songResult[0]?.length) {
+        notFound++
+        continue
+      }
+
+      const songId = songResult[0][0].id
+
       await db.query(`
-      INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
-      VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
-      ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
+        INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
+        VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
+        ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
-                     song: new RecordId('song', songKey),
-                     difficulty: score.difficulty,
-                     chart_type: score.chart_type,
-                     level: score.level,
-                     achievement: score.achievement,
+        song: songId,
+        difficulty: score.difficulty,
+        chart_type: score.chart_type,
+        level: score.level,
+        achievement: score.achievement,
       })
       success++
     } catch(e) {
@@ -125,28 +136,19 @@ app.post('/api/scores/sync', async (c) => {
       failed++
     }
   }
-  console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
-  // 同步完後自動從 song 表複製 CC 和 version
-  await db.query(`
-  UPDATE score SET
-  chart_constant = song.chart_constant,
-  version = song.version
-  WHERE player = $player AND chart_constant = NONE
-  `, { player: new RecordId('player', playerId.split(':')[1]) })
-  return c.json({ ok: true, success, failed })
+  console.log(`✅ 存入 ${success} 筆，找不到歌曲 ${notFound} 筆，失敗 ${failed} 筆`)
+  return c.json({ ok: true, success, failed, notFound })
 })
 
 app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
-  console.log('b50 playerId:', playerId)
   if (!playerId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
   const playerKey = playerId.split(':')[1]
-  console.log('b50 playerKey:', playerKey)
 
   const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
+    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title, song.image_name AS image_name
     FROM score
     WHERE chart_constant != NONE
     AND player = $player
