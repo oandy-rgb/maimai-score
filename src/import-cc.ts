@@ -72,7 +72,6 @@ async function importCC() {
                        bpm: song.bpm ?? 0,
                        version,
                        cc: finalCC,
-                       chart_type: type, // 🌟 補上這個！這非常重要！
         })
         songUpdated++
 
