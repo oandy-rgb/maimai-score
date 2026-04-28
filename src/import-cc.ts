@@ -3,6 +3,9 @@ import { RecordId } from 'surrealdb'
 
 const DXDATA_URL = 'https://raw.githubusercontent.com/gekichumai/dxrating/main/packages/dxdata/dxdata.json'
 
+// 設定當前目標賽季
+const TARGET_VERSION = 'CiRCLE'
+
 const DIFFICULTY_MAP: Record<string, string> = {
   basic: 'BASIC',
   advanced: 'ADVANCED',
@@ -16,19 +19,14 @@ const TYPE_MAP: Record<string, string> = {
   std: 'STANDARD',
 }
 
-function getCC(sheet: any): number {
-  const mv = sheet.multiverInternalLevelValue ?? {}
-  return mv['CiRCLE'] ?? sheet.internalLevelValue
-}
-
 async function importCC() {
   await connectDB()
 
-  console.log('📥 下載 dxdata.json...')
+  console.log(`📥 正在下載最新 dxdata.json (優先匹配版本: ${TARGET_VERSION})...`)
   const res = await fetch(DXDATA_URL)
   const data = await res.json() as { songs: any[] }
 
-  console.log(`📊 共 ${data.songs.length} 首歌`)
+  console.log(`📊 共偵測到 ${data.songs.length} 首歌`)
 
   let songUpdated = 0
   let scoreUpdated = 0
@@ -38,43 +36,59 @@ async function importCC() {
       const type = TYPE_MAP[sheet.type]
       const difficulty = DIFFICULTY_MAP[sheet.difficulty]
       if (!type || !difficulty) continue
-      if (!sheet.internalId) continue
 
-      const songId = `${sheet.internalId}_${type}`
-      const cc = getCC(sheet)
-      const version = sheet.version ?? ''
+        const songKey = `${song.title}_${type}`
 
-      // UPSERT song 表
-      await db.query(`
-      INSERT INTO song (id, title, genre, bpm, version, chart_constant, image_name, internal_id, chart_type)
-      VALUES ($id, $title, $genre, $bpm, $version, $cc, $image_name, $internal_id, $chart_type)
-      ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version, image_name = $image_name
-      `,  {
-        id: new RecordId('song', songId),
-        title: song.title,
-        genre: song.category ?? '',
-        bpm: song.bpm ?? 0,
-        version,
-        cc,
-        image_name: song.imageName ?? '',
-        song_internal_id: sheet.internalId,
-        chart_type: type,
-      })
-      songUpdated++
+        // 取得官方各層級數據
+        const intl = sheet.regionOverrides?.intl ?? {}
+        const multiver = sheet.multiverInternalLevelValue
+        const version = intl.version ?? sheet.version ?? ''
 
-      // 更新所有 player 的 score CC 和 version
-      await db.query(`
+        // --- 定數判定邏輯：CiRCLE 優先 ---
+        let finalCC: number
+
+        // 1. 優先檢查 multiver 裡是否有當前賽季 (CiRCLE) 的特定定數
+        if (multiver && typeof multiver[TARGET_VERSION] === 'number') {
+          finalCC = multiver[TARGET_VERSION]
+        }
+        // 2. 次優先檢查國際版標註的定數
+        else if (typeof intl.internalLevelValue === 'number') {
+          finalCC = intl.internalLevelValue
+        }
+        // 3. 以上皆無則使用基礎定數
+        else {
+          finalCC = sheet.internalLevelValue
+        }
+
+        // 1. UPSERT song 表 (儲存計算後的 CC)
+        await db.query(`
+        INSERT INTO song (id, title, genre, bpm, version, chart_constant)
+        VALUES ($id, $title, $genre, $bpm, $version, $cc)
+        ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
+        `, {
+          id: new RecordId('song', songKey),
+                       title: song.title,
+                       genre: song.category ?? '',
+                       bpm: song.bpm ?? 0,
+                       version,
+                       cc: finalCC,
+        })
+        songUpdated++
+
+        // 2. 更新所有玩家的 score CC 和 version
+        await db.query(`
         UPDATE score SET
-          chart_constant = $cc,
-          version = $version
-        WHERE song = $song AND difficulty = $difficulty
-      `, {
-        cc,
-        version,
-        song: new RecordId('song', songId),
-        difficulty,
-      })
-      scoreUpdated++
+        chart_constant = $cc,
+        version = $version
+        WHERE song = $song AND difficulty = $difficulty AND chart_type = $chart_type
+        `, {
+          cc: finalCC,
+          version,
+          song: new RecordId('song', songKey),
+                       difficulty,
+                       chart_type: type,
+        })
+        scoreUpdated++
     }
   }
 

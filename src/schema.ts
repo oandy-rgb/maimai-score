@@ -13,16 +13,13 @@ export async function initSchema() {
     PERMISSIONS
     FOR select FULL
     FOR create, update, delete NONE;
-    DEFINE FIELD IF NOT EXISTS image_name ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS song_internal_id ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS chart_type ON song TYPE option<string>;
-    DEFINE INDEX IF NOT EXISTS song_title_type ON song FIELDS title, chart_type;
     DEFINE FIELD IF NOT EXISTS title ON song TYPE string;
     DEFINE FIELD IF NOT EXISTS genre ON song TYPE string;
     DEFINE FIELD IF NOT EXISTS bpm ON song TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS version ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS embedding ON song TYPE option<array<float>>;
     DEFINE FIELD IF NOT EXISTS chart_constant ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS custom_chart_constant ON song TYPE option<number>;
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;
     DEFINE TABLE IF NOT EXISTS score SCHEMAFULL

@@ -104,30 +104,16 @@ app.post('/api/scores/sync', async (c) => {
   let success = 0
   let failed = 0
   for (const score of scores) {
+    const songKey = `${score.title}_${score.chart_type}`
     try {
-      // 用 title + chart_type 查 song
-      const songResult = await db.query<any[]>(`
-      SELECT id FROM song WHERE title = $title AND chart_type = $chart_type LIMIT 1
-      `, {
-        title: score.title,
-        chart_type: score.chart_type,
-      })
-
-      if (!songResult[0]?.length) {
-        console.warn(`找不到歌曲: ${score.title} ${score.chart_type}`)
-        failed++
-        continue
-      }
-
-      const songId = songResult[0][0].id
-
+      // 不再 INSERT song，song 由 import-cc.ts 管理
       await db.query(`
       INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
       VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
       ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
-                     song: songId,
+                     song: new RecordId('song', songKey),
                      difficulty: score.difficulty,
                      chart_type: score.chart_type,
                      level: score.level,
@@ -140,6 +126,13 @@ app.post('/api/scores/sync', async (c) => {
     }
   }
   console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
+  // 同步完後自動從 song 表複製 CC 和 version
+  await db.query(`
+  UPDATE score SET
+  chart_constant = song.chart_constant,
+  version = song.version
+  WHERE player = $player AND chart_constant = NONE
+  `, { player: new RecordId('player', playerId.split(':')[1]) })
   return c.json({ ok: true, success, failed })
 })
 
