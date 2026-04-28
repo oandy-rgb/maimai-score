@@ -41,7 +41,7 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS fc ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS updated_at ON score TYPE datetime DEFAULT time::now();
     DEFINE INDEX IF NOT EXISTS score_player ON score FIELDS player;
-    DEFINE INDEX IF NOT EXISTS score_unique ON score FIELDS player, song, difficulty, chart_type UNIQUE;
+    DEFINE INDEX IF NOT EXISTS score_unique ON score FIELDS player, song UNIQUE;
     `)
     console.log('✅ Schema 初始化完成')
 }

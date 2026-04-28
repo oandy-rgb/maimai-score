@@ -37,7 +37,8 @@ async function importCC() {
       const difficulty = DIFFICULTY_MAP[sheet.difficulty]
       if (!type || !difficulty) continue
 
-        const songKey = `${song.title}_${type}`
+        // 改這行
+        const songKey = `${song.title}_${type}_${difficulty}`
 
         // 取得官方各層級數據
         const intl = sheet.regionOverrides?.intl ?? {}
@@ -62,9 +63,12 @@ async function importCC() {
 
         // 1. UPSERT song 表 (儲存計算後的 CC)
         await db.query(`
-        INSERT INTO song (id, title, genre, bpm, version, chart_constant)
-        VALUES ($id, $title, $genre, $bpm, $version, $cc)
-        ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
+        UPSERT $id SET
+        title = $title,
+        genre = $genre,
+        bpm = $bpm,
+        version = $version,
+        chart_constant = $cc
         `, {
           id: new RecordId('song', songKey),
                        title: song.title,
@@ -80,7 +84,7 @@ async function importCC() {
         UPDATE score SET
         chart_constant = $cc,
         version = $version
-        WHERE song = $song AND difficulty = $difficulty AND chart_type = $chart_type
+        WHERE song = $song
         `, {
           cc: finalCC,
           version,

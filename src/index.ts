@@ -104,18 +104,27 @@ app.post('/api/scores/sync', async (c) => {
   let success = 0
   let failed = 0
   for (const score of scores) {
-    const songKey = `${score.title}_${score.chart_type}`
+    const chartType = score.chart_type?.toUpperCase()
+    const difficulty = score.difficulty?.toUpperCase()
+    const songKey = `${score.title}_${chartType}_${difficulty}`
     try {
       // 不再 INSERT song，song 由 import-cc.ts 管理
       await db.query(`
-      INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
-      VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
-      ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
+      INSERT INTO score {
+        player: $player,
+        song: $song,
+        difficulty: $difficulty,
+        chart_type: $chart_type,
+        level: $level,
+        achievement: $achievement
+      } ON DUPLICATE KEY UPDATE
+      achievement = $input.achievement,
+      updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
                      song: new RecordId('song', songKey),
-                     difficulty: score.difficulty,
-                     chart_type: score.chart_type,
+                     difficulty,        // 已經 toUpperCase() 過的
+                     chart_type: chartType,  // 已經 toUpperCase() 過的
                      level: score.level,
                      achievement: score.achievement,
       })
