@@ -14,7 +14,7 @@ export async function initSchema() {
     FOR select FULL
     FOR create, update, delete NONE;
     DEFINE FIELD IF NOT EXISTS image_name ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS internal_id ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS song_internal_id ON song TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS chart_type ON song TYPE option<string>;
     DEFINE INDEX IF NOT EXISTS song_title_type ON song FIELDS title, chart_type;
     DEFINE FIELD IF NOT EXISTS title ON song TYPE string;

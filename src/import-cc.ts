@@ -57,7 +57,7 @@ async function importCC() {
         version,
         cc,
         image_name: song.imageName ?? '',
-        internal_id: sheet.internalId,
+        song_internal_id: sheet.internalId,
         chart_type: type,
       })
       songUpdated++
