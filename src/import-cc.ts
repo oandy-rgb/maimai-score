@@ -12,6 +12,12 @@ async function importCC() {
   console.log(`📥 正在同步 ${data.songs.length} 首歌...`)
 
   for (const song of data.songs) {
+    const rawId = song.songId;
+    if (!rawId) continue; // 跳過沒有 ID 的歌
+    const internalId = parseInt(rawId);
+    if (isNaN(internalId)) {
+      console.warn(`⚠️ 跳過非法 ID 歌曲: ${song.title}`);
+      continue;
     const internalId = parseInt(song.songId)
     // 整理各難度的 CC，索引 0-4 對應 B, A, E, M, ReM
     const ccList = [0, 0, 0, 0, 0]
@@ -31,6 +37,23 @@ async function importCC() {
           finalCC = intl.internalLevelValue
         }
         ccList[idx] = finalCC
+        try {
+          await db.query(`
+          INSERT INTO song (id, internalId, title, genre, bpm, version, chart_constant)
+          VALUES ($id, $internalId, $title, $genre, $bpm, $version, $cc)
+          ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
+          `, {
+            id: new RecordId('song', internalId.toString()),
+                         internalId,
+                         title: song.title,
+                         genre: song.category ?? '',
+                         bpm: typeof song.bpm === 'number' ? song.bpm : 0,
+                         version: song.version ?? '',
+                         cc: ccList,
+          });
+        } catch (e) {
+          console.error(`❌ 寫入失敗: ${song.title}`, e.message);
+        }
     }
 
     // 寫入歌曲，ID 使用 song:internalId
