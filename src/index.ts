@@ -158,7 +158,7 @@ app.get('/b50', async (c) => {
   console.log('b50 playerKey:', playerKey)
 
   const result = await db.query(`
-  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
+  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, song.title AS title
   FROM score
   WHERE chart_constant != NONE
   AND player = $player
