@@ -136,7 +136,19 @@ app.post('/api/scores/sync', async (c) => {
       failed++
     }
   }
+  // index.ts 的 sync 路由最後面
   console.log(`✅ 存入 ${success} 筆，找不到歌曲 ${notFound} 筆，失敗 ${failed} 筆`)
+
+  // 🌟 補齊定數邏輯
+  await db.query(`
+  UPDATE score SET
+  chart_constant = song.chart_constant,
+  version = song.version
+  WHERE player = $player AND (chart_constant = NONE OR chart_constant = 0)
+  `, {
+    player: new RecordId('player', playerId.split(':')[1])
+  })
+
   return c.json({ ok: true, success, failed, notFound })
 })
 
