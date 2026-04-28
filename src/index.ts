@@ -116,9 +116,11 @@ app.post('/api/scores/sync', async (c) => {
         difficulty: $difficulty,
         chart_type: $chart_type,
         level: $level,
-        achievement: $achievement
+        achievement: $achievement,
+        fc: $fc
       } ON DUPLICATE KEY UPDATE
       achievement = $input.achievement,
+      fc = $input.fc,
       updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
@@ -127,6 +129,7 @@ app.post('/api/scores/sync', async (c) => {
                      chart_type: chartType,  // 已經 toUpperCase() 過的
                      level: score.level,
                      achievement: score.achievement,
+                     fc: score.fc ?? null,
       })
       success++
     } catch(e) {
@@ -166,7 +169,7 @@ app.get('/b50', async (c) => {
   const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
   const withRating = scores.map(s => ({
     ...s,
-    rating: calcRating(s.chart_constant, s.achievement),
+    rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
                                       isNew: NEW_VERSIONS.has(s.version),
   }))
   const newScores = withRating
