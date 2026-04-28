@@ -6,40 +6,32 @@ import { RecordId } from 'surrealdb'
 import { OAuth2Client } from 'google-auth-library'
 import { SignJWT, jwtVerify } from 'jose'
 
-const GOOGLE_CLIENT_ID = '785041222690-7l200uqtgsoio0bugjd2a1bh8bti629j.apps.googleusercontent.com'
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret-change-in-prod')
-const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
-
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret')
+const googleClient = new OAuth2Client('785041222690-7l200uqtgsoio0bugjd2a1bh8bti629j.apps.googleusercontent.com')
 const app = new Hono()
+
 connectDB().then(() => initSchema())
 app.use('*', cors())
 
+const DIFF_TO_IDX: Record<string, number> = { 'BASIC':0, 'ADVANCED':1, 'EXPERT':2, 'MASTER':3, 'REMASTER':4 }
+
 function calcRating(cc: number, achievement: number): number {
-  const a = Math.min(achievement, 100.5)
-  let multiplier: number
-  if (a >= 100.5) multiplier = 22.4
-    else if (a >= 100.0) multiplier = 21.6
-      else if (a >= 99.5) multiplier = 21.1
-        else if (a >= 99.0) multiplier = 20.8
-          else if (a >= 98.0) multiplier = 20.3
-            else if (a >= 97.0) multiplier = 20.0
-              else if (a >= 94.0) multiplier = 16.8
-                else if (a >= 90.0) multiplier = 15.2
-                  else if (a >= 80.0) multiplier = 13.6
-                    else multiplier = 0
-                      return Math.floor(cc * multiplier * a / 100)
+  if (achievement === 0 || cc === 0) return 0
+    const a = Math.min(achievement, 100.5)
+    let m = 0
+    if (a >= 100.5) m = 22.4; else if (a >= 100.0) m = 21.6; else if (a >= 99.5) m = 21.1;
+    else if (a >= 99.0) m = 20.8; else if (a >= 98.0) m = 20.3; else if (a >= 97.0) m = 20.0;
+    else if (a >= 94.0) m = 16.8; else if (a >= 90.0) m = 15.2; else if (a >= 80.0) m = 13.6;
+    return Math.floor(cc * m * a / 100)
 }
 
-async function getPlayerFromToken(c: any): Promise<string | null> {
+async function getPlayerId(c: any) {
   const auth = c.req.header('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
     try {
-      const token = auth.slice(7)
-      const { payload } = await jwtVerify(token, JWT_SECRET)
-      return payload.playerId as string
-    } catch {
-      return null
-    }
+      const { payload } = await jwtVerify(auth.slice(7), JWT_SECRET)
+      return (payload.playerId as string).split(':')[1]
+    } catch { return null }
 }
 
 app.get('/health', async (c) => {
@@ -83,72 +75,55 @@ app.get('/scores', async (c) => {
 })
 
 app.post('/api/scores/sync', async (c) => {
-  const playerId = await getPlayerFromToken(c)
-  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+  const pId = await getPlayerId(c)
+  if (!pId) return c.json({ error: 'Unauthorized' }, 401)
 
     const scores = await c.req.json()
-    let success = 0
-    let failed = 0
-
-    for (const score of scores) {
-      // 🌟 與 import-cc 絕對同步的正規化邏輯
-      const safeTitle = score.title.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
-      const diff = score.difficulty.toUpperCase().replace(/[^\p{L}\p{N}]/gu, '') // Re:MASTER 會自動變成 REMASTER
-      const chartType = score.chart_type.toUpperCase()
-      const safeSongId = `\`${safeTitle}_${chartType}_${diff}\``
-
+    for (const s of scores) {
       try {
+        const diff = s.difficulty.toUpperCase().replace('RE:', 'RE')
         await db.query(`
         INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
         VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
         ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
         `, {
-          player: new RecordId('player', playerId.split(':')[1]),
-                       song: new RecordId('song', safeSongId),
+          player: new RecordId('player', pId),
+                       song: new RecordId('song', s.songId.toString()), // 這裡是關鍵
                        difficulty: diff,
-                       chart_type: chartType,
-                       level: score.level,
-                       achievement: score.achievement,
+                       chart_type: s.chart_type.toUpperCase(),
+                       level: s.level,
+                       achievement: s.achievement
         })
-        success++
-      } catch(e) {
-        console.error(`❌ 同步失敗 [${score.title}]:`, e)
-        failed++
-      }
+      } catch (e) { console.error(`同步失敗 ID:${s.songId}`) }
     }
-
-    // 補齊 CC
-    await db.query(`
-    UPDATE score SET chart_constant = song.chart_constant, version = song.version
-    WHERE player = $player AND chart_constant = NONE
-    `, { player: new RecordId('player', playerId.split(':')[1]) })
-
-    console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
-    return c.json({ ok: true, success, failed })
+    return c.json({ ok: true })
 })
 
 app.get('/b50', async (c) => {
-  const playerId = await getPlayerFromToken(c)
-  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
+  const pId = await getPlayerId(c)
+  if (!pId) return c.json({ error: 'Unauthorized' }, 401)
 
     const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
-    FROM score
-    WHERE chart_constant != NONE AND player = $player
-    ORDER BY achievement DESC
-    `, { player: new RecordId('player', playerKey) })
+    SELECT achievement, difficulty, chart_type,
+    song.title as title, song.version as version, song.chart_constant as cc_list
+    FROM score WHERE player = $player FETCH song
+    `, { player: new RecordId('player', pId) })
 
-    const scores = result[0] as any[]
-    const NEW_VERSIONS = new Set([ 'PRiSM PLUS', 'CiRCLE'])
-    const withRating = scores.map(s => ({
-      ...s,
-      rating: calcRating(s.chart_constant, s.achievement),
-                                        isNew: NEW_VERSIONS.has(s.version),
-    }))
+    const raw = result[0] as any[]
+    const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
 
-    const newScores = withRating.filter(s => s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 15)
-    const oldScores = withRating.filter(s => !s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 35)
+    const withRating = raw.map(s => {
+      const cc = s.cc_list[DIFF_TO_IDX[s.difficulty]] || 0
+      return {
+        title: s.title,
+        achievement: s.achievement,
+        rating: calcRating(cc, s.achievement),
+                               isNew: NEW_VERSIONS.has(s.version)
+      }
+    }).filter(s => s.rating > 0)
+
+    const newScores = withRating.filter(s => s.isNew).sort((a,b) => b.rating - a.rating).slice(0, 15)
+    const oldScores = withRating.filter(s => !s.isNew).sort((a,b) => b.rating - a.rating).slice(0, 35)
     const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
 
     return c.json({ totalRating, newScores, oldScores })

@@ -4,83 +4,52 @@ import { RecordId } from 'surrealdb'
 const DXDATA_URL = 'https://raw.githubusercontent.com/gekichumai/dxrating/main/packages/dxdata/dxdata.json'
 const TARGET_VERSION = 'CiRCLE'
 
-const DIFFICULTY_MAP: Record<string, string> = {
-  basic: 'BASIC',
-  advanced: 'ADVANCED',
-  expert: 'EXPERT',
-  master: 'MASTER',
-  remaster: 'REMASTER',
-}
-
-const TYPE_MAP: Record<string, string> = {
-  dx: 'DX',
-  std: 'STANDARD',
-}
-
 async function importCC() {
   await connectDB()
-  console.log(`📥 正在下載最新 dxdata.json (優先匹配版本: ${TARGET_VERSION})...`)
   const res = await fetch(DXDATA_URL)
   const data = await res.json() as { songs: any[] }
 
-  console.log(`📊 共偵測到 ${data.songs.length} 首歌`)
-
-  let songUpdated = 0
-  let scoreUpdated = 0
+  console.log(`📥 正在同步 ${data.songs.length} 首歌...`)
 
   for (const song of data.songs) {
-    for (const sheet of song.sheets) {
-      const type = TYPE_MAP[sheet.type]
-      const difficulty = DIFFICULTY_MAP[sheet.difficulty]
-      if (!type || !difficulty) continue
+    const internalId = parseInt(song.songId)
+    // 整理各難度的 CC，索引 0-4 對應 B, A, E, M, ReM
+    const ccList = [0, 0, 0, 0, 0]
+    const diffIdx: Record<string, number> = { basic:0, advanced:1, expert:2, master:3, remaster:4 }
 
-        // 🌟 終極正規化：拔除所有符號與空格，只留中日英文與數字
-        const safeTitle = song.title.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
-        const safeSongId = `\`${safeTitle}_${type}_${difficulty}\``
+    for (const sheet of song.sheets) {
+      const idx = diffIdx[sheet.difficulty]
+      if (idx === undefined) continue
 
         const intl = sheet.regionOverrides?.intl ?? {}
         const multiver = sheet.multiverInternalLevelValue
-        const version = intl.version ?? sheet.version ?? ''
+        let finalCC = sheet.internalLevelValue
 
-        let finalCC: number
-        if (multiver && typeof multiver[TARGET_VERSION] === 'number') {
+        if (multiver?.[TARGET_VERSION]) {
           finalCC = multiver[TARGET_VERSION]
-        } else if (typeof intl.internalLevelValue === 'number') {
+        } else if (intl.internalLevelValue) {
           finalCC = intl.internalLevelValue
-        } else {
-          finalCC = sheet.internalLevelValue
         }
-
-        // 1. 寫入 song 表 (現在 ID 已經包含難度了)
-        await db.query(`
-        INSERT INTO song (id, title, genre, bpm, version, chart_constant)
-        VALUES ($id, $title, $genre, $bpm, $version, $cc)
-        ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
-        `, {
-          id: new RecordId('song', safeSongId),
-                       title: song.title, // 存原始名稱供顯示
-                       genre: song.category ?? '',
-                       bpm: song.bpm ?? 0,
-                       version,
-                       cc: finalCC,
-        })
-        songUpdated++
-
-        // 2. 更新 score 表 (因為 ID 是唯一的，只需比對 song 欄位)
-        await db.query(`
-        UPDATE score SET chart_constant = $cc, version = $version
-        WHERE song = $song
-        `, {
-          cc: finalCC,
-          version,
-          song: new RecordId('song', safeSongId),
-        })
-        scoreUpdated++
+        ccList[idx] = finalCC
     }
+
+    // 寫入歌曲，ID 使用 song:internalId
+    await db.query(`
+    INSERT INTO song (id, internalId, title, genre, bpm, version, chart_constant)
+    VALUES ($id, $internalId, $title, $genre, $bpm, $version, $cc)
+    ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
+    `, {
+      id: new RecordId('song', internalId.toString()),
+                   internalId,
+                   title: song.title,
+                   genre: song.category ?? '',
+                   bpm: song.bpm ?? 0,
+                   version: song.version ?? '',
+                   cc: ccList,
+    })
   }
 
-  console.log(`✅ song 更新：${songUpdated} 筆 (每個難度皆獨立存檔)`)
-  console.log(`✅ score 更新：${scoreUpdated} 筆`)
+  console.log(`✅ 歌曲庫同步完畢`)
   process.exit(0)
 }
 
