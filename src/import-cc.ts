@@ -2,8 +2,6 @@ import { connectDB, db } from './db'
 import { RecordId } from 'surrealdb'
 
 const DXDATA_URL = 'https://raw.githubusercontent.com/gekichumai/dxrating/main/packages/dxdata/dxdata.json'
-
-// 設定當前目標賽季
 const TARGET_VERSION = 'CiRCLE'
 
 const DIFFICULTY_MAP: Record<string, string> = {
@@ -21,7 +19,6 @@ const TYPE_MAP: Record<string, string> = {
 
 async function importCC() {
   await connectDB()
-
   console.log(`📥 正在下載最新 dxdata.json (優先匹配版本: ${TARGET_VERSION})...`)
   const res = await fetch(DXDATA_URL)
   const data = await res.json() as { songs: any[] }
@@ -37,37 +34,31 @@ async function importCC() {
       const difficulty = DIFFICULTY_MAP[sheet.difficulty]
       if (!type || !difficulty) continue
 
-        const songKey = `${song.title}_${type}`
+        // 🌟 終極正規化：拔除所有符號與空格，只留中日英文與數字
+        const safeTitle = song.title.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
+        const safeSongId = `\`${safeTitle}_${type}_${difficulty}\``
 
-        // 取得官方各層級數據
         const intl = sheet.regionOverrides?.intl ?? {}
         const multiver = sheet.multiverInternalLevelValue
         const version = intl.version ?? sheet.version ?? ''
 
-        // --- 定數判定邏輯：CiRCLE 優先 ---
         let finalCC: number
-
-        // 1. 優先檢查 multiver 裡是否有當前賽季 (CiRCLE) 的特定定數
         if (multiver && typeof multiver[TARGET_VERSION] === 'number') {
           finalCC = multiver[TARGET_VERSION]
-        }
-        // 2. 次優先檢查國際版標註的定數
-        else if (typeof intl.internalLevelValue === 'number') {
+        } else if (typeof intl.internalLevelValue === 'number') {
           finalCC = intl.internalLevelValue
-        }
-        // 3. 以上皆無則使用基礎定數
-        else {
+        } else {
           finalCC = sheet.internalLevelValue
         }
 
-        // 1. UPSERT song 表 (儲存計算後的 CC)
+        // 1. 寫入 song 表 (現在 ID 已經包含難度了)
         await db.query(`
         INSERT INTO song (id, title, genre, bpm, version, chart_constant)
         VALUES ($id, $title, $genre, $bpm, $version, $cc)
         ON DUPLICATE KEY UPDATE chart_constant = $cc, version = $version
         `, {
-          id: new RecordId('song', songKey),
-                       title: song.title,
+          id: new RecordId('song', safeSongId),
+                       title: song.title, // 存原始名稱供顯示
                        genre: song.category ?? '',
                        bpm: song.bpm ?? 0,
                        version,
@@ -75,24 +66,20 @@ async function importCC() {
         })
         songUpdated++
 
-        // 2. 更新所有玩家的 score CC 和 version
+        // 2. 更新 score 表 (因為 ID 是唯一的，只需比對 song 欄位)
         await db.query(`
-        UPDATE score SET
-        chart_constant = $cc,
-        version = $version
-        WHERE song = $song AND difficulty = $difficulty AND chart_type = $chart_type
+        UPDATE score SET chart_constant = $cc, version = $version
+        WHERE song = $song
         `, {
           cc: finalCC,
           version,
-          song: new RecordId('song', songKey),
-                       difficulty,
-                       chart_type: type,
+          song: new RecordId('song', safeSongId),
         })
         scoreUpdated++
     }
   }
 
-  console.log(`✅ song 更新：${songUpdated} 筆`)
+  console.log(`✅ song 更新：${songUpdated} 筆 (每個難度皆獨立存檔)`)
   console.log(`✅ score 更新：${scoreUpdated} 筆`)
   process.exit(0)
 }

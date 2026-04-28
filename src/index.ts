@@ -49,10 +49,7 @@ app.get('/health', async (c) => {
 app.post('/auth/google', async (c) => {
   const { idToken } = await c.req.json()
   try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: GOOGLE_CLIENT_ID,
-    })
+    const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })
     const payload = ticket.getPayload()!
     const email = payload.email!
     const name = payload.name ?? email
@@ -71,105 +68,90 @@ app.post('/auth/google', async (c) => {
     .setExpirationTime('30d')
     .sign(JWT_SECRET)
 
-    console.log(`✅ Google 登入成功：${email}，player: ${playerId}`)
     return c.json({ token, email })
   } catch (e) {
-    console.error('Google auth error:', e)
     return c.json({ error: 'Invalid token' }, 401)
   }
-})
-
-app.get('/test', async (c) => {
-  await db.query('CREATE player:test SET email = "test@test.com", username = "oandy"')
-  const result = await db.query('SELECT * FROM player')
-  return c.json(result)
 })
 
 app.get('/scores', async (c) => {
   const result = await db.query(`
   SELECT id, achievement, chart_type, difficulty, level, updated_at, song.title AS title
-  FROM score
-  ORDER BY achievement DESC
-  LIMIT 50
+  FROM score ORDER BY achievement DESC LIMIT 50
   `)
   return c.json(result)
 })
 
 app.post('/api/scores/sync', async (c) => {
   const playerId = await getPlayerFromToken(c)
-  if (!playerId) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const scores = await c.req.json()
-  let success = 0
-  let failed = 0
-  for (const score of scores) {
-    const songKey = `${score.title}_${score.chart_type}`
-    try {
-      // 不再 INSERT song，song 由 import-cc.ts 管理
-      await db.query(`
-      INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
-      VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
-      ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
-      `, {
-        player: new RecordId('player', playerId.split(':')[1]),
-                     song: new RecordId('song', songKey),
-                     difficulty: score.difficulty,
-                     chart_type: score.chart_type,
-                     level: score.level,
-                     achievement: score.achievement,
-      })
-      success++
-    } catch(e) {
-      console.error('error:', e)
-      failed++
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const scores = await c.req.json()
+    let success = 0
+    let failed = 0
+
+    for (const score of scores) {
+      // 🌟 與 import-cc 絕對同步的正規化邏輯
+      const safeTitle = score.title.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
+      const diff = score.difficulty.toUpperCase().replace(/[^\p{L}\p{N}]/gu, '') // Re:MASTER 會自動變成 REMASTER
+      const chartType = score.chart_type.toUpperCase()
+      const safeSongId = `\`${safeTitle}_${chartType}_${diff}\``
+
+      try {
+        await db.query(`
+        INSERT INTO score (player, song, difficulty, chart_type, level, achievement)
+        VALUES ($player, $song, $difficulty, $chart_type, $level, $achievement)
+        ON DUPLICATE KEY UPDATE achievement = $achievement, updated_at = time::now()
+        `, {
+          player: new RecordId('player', playerId.split(':')[1]),
+                       song: new RecordId('song', safeSongId),
+                       difficulty: diff,
+                       chart_type: chartType,
+                       level: score.level,
+                       achievement: score.achievement,
+        })
+        success++
+      } catch(e) {
+        console.error(`❌ 同步失敗 [${score.title}]:`, e)
+        failed++
+      }
     }
-  }
-  console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
-  // 同步完後自動從 song 表複製 CC 和 version
-  await db.query(`
-  UPDATE score SET
-  chart_constant = song.chart_constant,
-  version = song.version
-  WHERE player = $player AND chart_constant = NONE
-  `, { player: new RecordId('player', playerId.split(':')[1]) })
-  return c.json({ ok: true, success, failed })
+
+    // 補齊 CC
+    await db.query(`
+    UPDATE score SET chart_constant = song.chart_constant, version = song.version
+    WHERE player = $player AND chart_constant = NONE
+    `, { player: new RecordId('player', playerId.split(':')[1]) })
+
+    console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
+    return c.json({ ok: true, success, failed })
 })
 
 app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
-  console.log('b50 playerId:', playerId)
-  if (!playerId) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const playerKey = playerId.split(':')[1]
-  console.log('b50 playerKey:', playerKey)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = playerId.split(':')[1]
 
-  const result = await db.query(`
-  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
-  FROM score
-  WHERE chart_constant != NONE
-  AND player = $player
-  ORDER BY achievement DESC
-  `, { player: new RecordId('player', playerKey) })
+    const result = await db.query(`
+    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, song.title AS title
+    FROM score
+    WHERE chart_constant != NONE AND player = $player
+    ORDER BY achievement DESC
+    `, { player: new RecordId('player', playerKey) })
 
-  const scores = result[0] as any[]
-  const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
-  const withRating = scores.map(s => ({
-    ...s,
-    rating: calcRating(s.chart_constant, s.achievement),
-                                      isNew: NEW_VERSIONS.has(s.version),
-  }))
-  const newScores = withRating
-  .filter(s => s.isNew)
-  .sort((a, b) => b.rating - a.rating)
-  .slice(0, 15)
-  const oldScores = withRating
-  .filter(s => !s.isNew)
-  .sort((a, b) => b.rating - a.rating)
-  .slice(0, 35)
-  const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
-  return c.json({ totalRating, newScores, oldScores })
+    const scores = result[0] as any[]
+    const NEW_VERSIONS = new Set([ 'PRiSM PLUS', 'CiRCLE'])
+    const withRating = scores.map(s => ({
+      ...s,
+      rating: calcRating(s.chart_constant, s.achievement),
+                                        isNew: NEW_VERSIONS.has(s.version),
+    }))
+
+    const newScores = withRating.filter(s => s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 15)
+    const oldScores = withRating.filter(s => !s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 35)
+    const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
+
+    return c.json({ totalRating, newScores, oldScores })
 })
 
 export default app
