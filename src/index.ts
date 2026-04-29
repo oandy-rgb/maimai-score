@@ -119,8 +119,8 @@ app.post('/api/scores/sync', async (c) => {
         achievement: $achievement,
         fc: $fc
       } ON DUPLICATE KEY UPDATE
-      achievement = $achievement,
-      fc = $fc,
+      achievement = $input.achievement,
+      fc = $input.fc,
       updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
@@ -129,7 +129,7 @@ app.post('/api/scores/sync', async (c) => {
                      chart_type: chartType,  // 已經 toUpperCase() 過的
                      level: score.level,
                      achievement: score.achievement,
-                     fc: score.fc ?? null,
+                     fc: score.fc || "",
       })
       success++
     } catch(e) {
