@@ -119,8 +119,8 @@ app.post('/api/scores/sync', async (c) => {
         achievement: $achievement,
         fc: $fc
       } ON DUPLICATE KEY UPDATE
-      achievement = $input.achievement,
-      fc = $input.fc,
+      achievement = $achievement,
+      fc = $fc,
       updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
