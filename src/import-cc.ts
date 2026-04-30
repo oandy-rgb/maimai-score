@@ -2,7 +2,7 @@ import { connectDB, db } from './db'
 import { RecordId } from 'surrealdb'
 
 const DXDATA_URL = 'https://raw.githubusercontent.com/gekichumai/dxrating/main/packages/dxdata/dxdata.json'
-const DIVING_FISH_URL = 'https://www.diving-fish.com/api/maimaidxprober/music_data' // ✅ 新增水魚 API
+const DIVING_FISH_URL = 'https://www.diving-fish.com/api/maimaidxprober/music_data'
 const TARGET_VERSION = 'CiRCLE'
 
 const DIFFICULTY_MAP: Record<string, string> = {
@@ -29,20 +29,57 @@ async function importCC() {
   const dfRes = await fetch(DIVING_FISH_URL)
   const dfData = await dfRes.json() as any[]
 
-  console.log(`🔗 正在建立封面 ID 對照表...`)
+  console.log(`🔗 正在建立封面 ID 對照表 (雙源整合中)...`)
   const imageMap: Record<string, string> = {}
+
+  // 來源一：水魚 API (建立基礎國服資料)
   for (const song of dfData) {
-    // 官方圖庫標準：不足 5 位數要補零，並加上 .png (例如 168 -> 00168.png)
-    imageMap[song.title] = String(song.id).padStart(5, '0') + '.png'
+    if (song.id) {
+      imageMap[song.title] = String(song.id).padStart(5, '0') + '.png'
+    }
   }
 
-  console.log(`📊 共偵測到 dxdata: ${data.songs.length} 首歌, 水魚: ${dfData.length} 首歌`)
+  // 🌟 來源二：自動抓取 Lxns API (國際服/日服最新曲目) 🌟
+  console.log(`🌍 正在連接 Lxns API 獲取國際服/日服最新曲目...`)
+  try {
+    // Lxns 的公開 API，會一次回傳所有曲目的官方 ID
+    const LXNS_URL = 'https://maimai.lxns.net/api/v0/maimai/song/list'
+    const lxnsRes = await fetch(LXNS_URL)
 
+    if (!lxnsRes.ok) {
+      throw new Error(`HTTP Error: ${lxnsRes.status}`);
+    }
+
+    const lxnsData = await lxnsRes.json() as any
+
+    // Lxns 回傳格式為 { success: true, data: [...] }
+    if (lxnsData.success && lxnsData.data) {
+      let patchCount = 0
+      for (const song of lxnsData.data) {
+        if (song.id) {
+          // 將官方 ID 轉換成五位數圖片檔名
+          const fileName = String(song.id).padStart(5, '0') + '.png'
+
+          // 如果水魚沒有這首歌，就用 Lxns 的資料補上！
+          if (!imageMap[song.title]) {
+            imageMap[song.title] = fileName
+            patchCount++
+          }
+        }
+      }
+      console.log(`✨ 成功從 Lxns 自動補齊了 ${patchCount} 首新歌！`)
+    }
+  } catch (error) {
+    console.warn(`⚠️ 無法連接 Lxns API，將僅使用水魚資料。原因:`, error)
+  }
+
+  console.log(`📊 共偵測到 dxdata: ${data.songs.length} 首歌`)
+
+  // ✅ 確保這兩個變數宣告在所有迴圈的最外面
   let songUpdated = 0
   let scoreUpdated = 0
 
   for (const song of data.songs) {
-    // 🌟 查表：從水魚的資料庫裡抓出這首歌的 5 位數檔名。極少數水魚還沒更新的新歌給預設空圖
     const finalImageName = imageMap[song.title] ?? '00000.png'
 
     for (const sheet of song.sheets) {
@@ -52,28 +89,21 @@ async function importCC() {
 
         const songKey = `${song.title}_${type}_${difficulty}`
 
-        // 取得官方各層級數據
         const intl = sheet.regionOverrides?.intl ?? {}
         const multiver = sheet.multiverInternalLevelValue
         const version = intl.version ?? sheet.version ?? ''
 
-        // --- 定數判定邏輯：CiRCLE 優先 ---
         let finalCC: number
 
-        // 1. 優先檢查 multiver 裡是否有當前賽季 (CiRCLE) 的特定定數
         if (multiver && typeof multiver[TARGET_VERSION] === 'number') {
           finalCC = multiver[TARGET_VERSION]
-        }
-        // 2. 次優先檢查國際版標註的定數
-        else if (typeof intl.internalLevelValue === 'number') {
+        } else if (typeof intl.internalLevelValue === 'number') {
           finalCC = intl.internalLevelValue
-        }
-        // 3. 以上皆無則使用基礎定數
-        else {
+        } else {
           finalCC = sheet.internalLevelValue
         }
 
-        // 1. UPSERT song 表 (儲存計算後的 CC 與 5位數封面檔名)
+        // UPSERT song 表
         await db.query(`
         UPSERT $id SET
         title = $title,
@@ -89,11 +119,11 @@ async function importCC() {
                        bpm: song.bpm ?? 0,
                        version,
                        cc: finalCC,
-                       image_name: finalImageName // ✅ 寫入查出來的 00168.png 格式
+                       image_name: finalImageName
         })
-        songUpdated++
+        songUpdated++ // ✅ 這裡現在可以正確讀取到外部宣告的變數了
 
-        // 2. 更新所有玩家的 score CC 和 version
+        // UPDATE score 表
         await db.query(`
         UPDATE score SET
         chart_constant = $cc,
