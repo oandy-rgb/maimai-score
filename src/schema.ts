@@ -20,6 +20,7 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS embedding ON song TYPE option<array<float>>;
     DEFINE FIELD IF NOT EXISTS chart_constant ON song TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS custom_chart_constant ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS image_name ON song TYPE option<string>;
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;
     DEFINE TABLE IF NOT EXISTS score SCHEMAFULL

@@ -62,13 +62,15 @@ async function importCC() {
         }
 
         // 1. UPSERT song 表 (儲存計算後的 CC)
+        // 1. UPSERT song 表 (儲存計算後的 CC 與封面檔名)
         await db.query(`
         UPSERT $id SET
         title = $title,
         genre = $genre,
         bpm = $bpm,
         version = $version,
-        chart_constant = $cc
+        chart_constant = $cc,
+        image_name = $image_name  // ✅ 新增這行
         `, {
           id: new RecordId('song', songKey),
                        title: song.title,
@@ -76,6 +78,7 @@ async function importCC() {
                        bpm: song.bpm ?? 0,
                        version,
                        cc: finalCC,
+                       image_name: song.imageName ?? '' // ✅ 把 dxdata 的 imageName 存進去
         })
         songUpdated++
 

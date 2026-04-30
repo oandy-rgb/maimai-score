@@ -87,7 +87,10 @@ app.get('/test', async (c) => {
 
 app.get('/scores', async (c) => {
   const result = await db.query(`
-  SELECT id, achievement, chart_type, difficulty, level, updated_at, song.title AS title
+  SELECT
+  id, achievement, chart_type, difficulty, level, updated_at,
+  song.title AS title,
+  song.image_name AS image_name
   FROM score
   ORDER BY achievement DESC
   LIMIT 50
@@ -158,7 +161,10 @@ app.get('/b50', async (c) => {
   console.log('b50 playerKey:', playerKey)
 
   const result = await db.query(`
-  SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, song.title AS title
+  SELECT
+  id, achievement, chart_type, difficulty, level, chart_constant, version, fc,
+  song.title AS title,
+  song.image_name AS image_name  -- ✅ 把關聯的圖片檔名拉出來
   FROM score
   WHERE chart_constant != NONE
   AND player = $player
