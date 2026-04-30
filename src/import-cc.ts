@@ -2,8 +2,7 @@ import { connectDB, db } from './db'
 import { RecordId } from 'surrealdb'
 
 const DXDATA_URL = 'https://raw.githubusercontent.com/gekichumai/dxrating/main/packages/dxdata/dxdata.json'
-
-// 設定當前目標賽季
+const DIVING_FISH_URL = 'https://www.diving-fish.com/api/maimaidxprober/music_data' // ✅ 新增水魚 API
 const TARGET_VERSION = 'CiRCLE'
 
 const DIFFICULTY_MAP: Record<string, string> = {
@@ -26,18 +25,31 @@ async function importCC() {
   const res = await fetch(DXDATA_URL)
   const data = await res.json() as { songs: any[] }
 
-  console.log(`📊 共偵測到 ${data.songs.length} 首歌`)
+  console.log(`🐟 正在下載水魚 API 以獲取官方封面 ID...`)
+  const dfRes = await fetch(DIVING_FISH_URL)
+  const dfData = await dfRes.json() as any[]
+
+  console.log(`🔗 正在建立封面 ID 對照表...`)
+  const imageMap: Record<string, string> = {}
+  for (const song of dfData) {
+    // 官方圖庫標準：不足 5 位數要補零，並加上 .png (例如 168 -> 00168.png)
+    imageMap[song.title] = String(song.id).padStart(5, '0') + '.png'
+  }
+
+  console.log(`📊 共偵測到 dxdata: ${data.songs.length} 首歌, 水魚: ${dfData.length} 首歌`)
 
   let songUpdated = 0
   let scoreUpdated = 0
 
   for (const song of data.songs) {
+    // 🌟 查表：從水魚的資料庫裡抓出這首歌的 5 位數檔名。極少數水魚還沒更新的新歌給預設空圖
+    const finalImageName = imageMap[song.title] ?? '00000.png'
+
     for (const sheet of song.sheets) {
       const type = TYPE_MAP[sheet.type]
       const difficulty = DIFFICULTY_MAP[sheet.difficulty]
       if (!type || !difficulty) continue
 
-        // 改這行
         const songKey = `${song.title}_${type}_${difficulty}`
 
         // 取得官方各層級數據
@@ -61,8 +73,7 @@ async function importCC() {
           finalCC = sheet.internalLevelValue
         }
 
-        // 1. UPSERT song 表 (儲存計算後的 CC)
-        // 1. UPSERT song 表 (儲存計算後的 CC 與封面檔名)
+        // 1. UPSERT song 表 (儲存計算後的 CC 與 5位數封面檔名)
         await db.query(`
         UPSERT $id SET
         title = $title,
@@ -70,7 +81,7 @@ async function importCC() {
         bpm = $bpm,
         version = $version,
         chart_constant = $cc,
-        image_name = $image_name  // ✅ 新增這行
+        image_name = $image_name
         `, {
           id: new RecordId('song', songKey),
                        title: song.title,
@@ -78,7 +89,7 @@ async function importCC() {
                        bpm: song.bpm ?? 0,
                        version,
                        cc: finalCC,
-                       image_name: song.imageName ?? '' // ✅ 把 dxdata 的 imageName 存進去
+                       image_name: finalImageName // ✅ 寫入查出來的 00168.png 格式
         })
         songUpdated++
 
