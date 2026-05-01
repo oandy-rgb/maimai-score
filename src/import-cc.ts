@@ -29,7 +29,7 @@ async function importCC() {
     const bpm = parseInt(song.bpm) || 0
     const version = song.version || ''
     const finalImageName = song.image_url || '00000.png'
-
+    const artist = song.artist || ''
     // 🌟 軌道 1：解析 STANDARD (標準) 譜面
     for (const diff of DIFFS) {
       const ccString = song[`lev_${diff.key}_i`]
@@ -44,11 +44,13 @@ async function importCC() {
           await db.query(`
           UPSERT $id SET
           title = $title,
+          artist = $artist,
           genre = $genre,
           bpm = $bpm,
           version = $version,
           chart_constant = $cc,
-          image_name = $image_name
+          image_name = $image_name,
+          chart_type = 'STANDARD'
           `, {
             id: new RecordId('song', songKey),
                          title, genre, bpm, version, cc: finalCC, image_name: finalImageName
@@ -82,11 +84,13 @@ async function importCC() {
           await db.query(`
           UPSERT $id SET
           title = $title,
+          artist = $artist,
           genre = $genre,
           bpm = $bpm,
           version = $version,
           chart_constant = $cc,
-          image_name = $image_name
+          image_name = $image_name,
+          chart_type = 'DX'
           `, {
             id: new RecordId('song', songKey),
                          title, genre, bpm, version, cc: finalCC, image_name: finalImageName
