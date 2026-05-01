@@ -1,10 +1,8 @@
 import { connectDB, db } from './db'
 import { RecordId } from 'surrealdb'
 
-// 🌟 直接鎖定你找到的國際服專屬 JSON
 const INTL_DB_URL = 'https://raw.githubusercontent.com/zvuc/otoge-db/refs/heads/master/maimai/data/music-ex-intl.json'
 
-// 對應扁平化 JSON 裡的難度 key (bas, adv, exp, mas, remas)
 const DIFFS = [
   { key: 'bas', name: 'BASIC' },
 { key: 'adv', name: 'ADVANCED' },
@@ -20,38 +18,29 @@ async function importCC() {
   const res = await fetch(INTL_DB_URL, { cache: "no-store" })
   const songs = await res.json() as any[]
 
-  console.log(`📊 共偵測到: ${songs.length} 筆譜面資料`)
+  console.log(`📊 共偵測到: ${songs.length} 首歌曲資料`)
 
   let songUpdated = 0
   let scoreUpdated = 0
 
   for (const song of songs) {
-    // 💡 otoge-db 在這種格式通常用 type 欄位標示 DX 譜面
-    // 如果沒有這個欄位，我們就預設它是 STANDARD 標譜
-    const chartType = song.type === 'DX' ? 'DX' : 'STANDARD'
-
     const title = song.title
     const genre = song.catcode || ''
-    // JSON 裡的 bpm 是字串 "150"，需要轉成數字
     const bpm = parseInt(song.bpm) || 0
     const version = song.version || ''
     const finalImageName = song.image_url || '00000.png'
 
-    // 把五個難度掃過一遍
+    // 🌟 軌道 1：解析 STANDARD (標準) 譜面
     for (const diff of DIFFS) {
-      // 動態組裝 key，例如 'lev_bas_i' 就是 Basic 的定數
       const ccString = song[`lev_${diff.key}_i`]
-
-      // 如果這首歌沒有這個難度 (例如沒有 Re:Master)，就直接跳過
-      if (!ccString) continue
+      if (!ccString) continue // 如果沒有這個難度，就跳過
 
         const finalCC = parseFloat(ccString)
         if (isNaN(finalCC)) continue
 
-          // 組裝 SurrealDB 的 Primary Key
-          const songKey = `${title}_${chartType}_${diff.name}`
+          const songKey = `${title}_STANDARD_${diff.name}`
 
-          // UPSERT song 表
+          // 更新歌曲資料 (寫入圖片 Hash 碼)
           await db.query(`
           UPSERT $id SET
           title = $title,
@@ -62,25 +51,56 @@ async function importCC() {
           image_name = $image_name
           `, {
             id: new RecordId('song', songKey),
-                         title,
-                         genre,
-                         bpm,
-                         version,
-                         cc: finalCC,
-                         image_name: finalImageName // 寫入官方 Hash 碼
+                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName
           })
           songUpdated++
 
-          // UPDATE score 表
+          // 將最新的定數同步給使用者的成績
           await db.query(`
           UPDATE score SET
           chart_constant = $cc,
           version = $version
           WHERE song = $song
           `, {
-            cc: finalCC,
-            version,
-            song: new RecordId('song', songKey)
+            cc: finalCC, version, song: new RecordId('song', songKey)
+          })
+          scoreUpdated++
+    }
+
+    // 🌟 軌道 2：解析 DX (でらっくす) 譜面
+    for (const diff of DIFFS) {
+      // 關鍵！尋找 dx_lev_ 開頭的屬性
+      const ccString = song[`dx_lev_${diff.key}_i`]
+      if (!ccString) continue
+
+        const finalCC = parseFloat(ccString)
+        if (isNaN(finalCC)) continue
+
+          const songKey = `${title}_DX_${diff.name}`
+
+          // 更新歌曲資料 (寫入圖片 Hash 碼)
+          await db.query(`
+          UPSERT $id SET
+          title = $title,
+          genre = $genre,
+          bpm = $bpm,
+          version = $version,
+          chart_constant = $cc,
+          image_name = $image_name
+          `, {
+            id: new RecordId('song', songKey),
+                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName
+          })
+          songUpdated++
+
+          // 將最新的定數同步給使用者的成績
+          await db.query(`
+          UPDATE score SET
+          chart_constant = $cc,
+          version = $version
+          WHERE song = $song
+          `, {
+            cc: finalCC, version, song: new RecordId('song', songKey)
           })
           scoreUpdated++
     }

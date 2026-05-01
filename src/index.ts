@@ -172,7 +172,7 @@ app.get('/b50', async (c) => {
   `, { player: new RecordId('player', playerKey) })
 
   const scores = result[0] as any[]
-  const NEW_VERSIONS = new Set(['PRiSM PLUS', 'CiRCLE'])
+  const NEW_VERSIONS = new Set(['26000', '25500'])
   const withRating = scores.map(s => ({
     ...s,
     rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
