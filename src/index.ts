@@ -172,12 +172,18 @@ app.get('/b50', async (c) => {
   `, { player: new RecordId('player', playerKey) })
 
   const scores = result[0] as any[]
-  const NEW_VERSIONS = new Set(['26000', '25500'])
-  const withRating = scores.map(s => ({
-    ...s,
-    rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
-                                      isNew: NEW_VERSIONS.has(s.version),
-  }))
+
+  const withRating = scores.map(s => {
+    // 1. 先在這裡把這首歌的 version 轉成數字 (必須寫在 map 裡面)
+    const versionNum = parseInt(s.version) || 0;
+
+    // 2. 加上 return，把整包物件回傳出去
+    return {
+      ...s,
+      rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
+                                isNew: versionNum >= 25500,
+    };
+  })
   const newScores = withRating
   .filter(s => s.isNew)
   .sort((a, b) => b.rating - a.rating)
