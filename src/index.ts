@@ -196,4 +196,25 @@ app.get('/b50', async (c) => {
   return c.json({ totalRating, newScores, oldScores })
 })
 
+app.get('/api/songs', async (c) => {
+  try {
+    // 🌟 使用 GROUP BY 來過濾掉不同難度的重複資料，只回傳唯一卡片
+    // 注意：如果有 artist 欄位記得補進 SELECT 跟 GROUP BY 裡
+    const result = await db.query(`
+    SELECT
+    title,
+    artist,
+    image_name,
+    chart_type
+    FROM song
+    GROUP BY title, artist, image_name, chart_type
+    `)
+
+    // SurrealDB 的 query 回傳通常是雙層陣列 result[0]
+    return c.json(result[0] || [])
+  } catch (error) {
+    console.error('Fetch songs error:', error)
+    return c.json({ error: '無法獲取歌曲資料' }, 500)
+  }
+})
 export default app
