@@ -198,19 +198,24 @@ app.get('/b50', async (c) => {
 
 app.get('/api/songs', async (c) => {
   try {
-    // 🌟 使用 GROUP BY 來過濾掉不同難度的重複資料，只回傳唯一卡片
-    // 注意：如果有 artist 欄位記得補進 SELECT 跟 GROUP BY 裡
+    // 🌟 升級版查詢：不只拿基本資訊，還要把五個難度的資料打包進來！
+    // 我們利用 SurrealDB 的子查詢 (Subquery) 來達成
     const result = await db.query(`
     SELECT
     title,
     artist,
     image_name,
-    chart_type
+    chart_type,
+    -- 使用 subquery 找出與這首歌同名且同類型的所有難度，並提取 chart_constant 和 level
+    (
+      SELECT difficulty, level, chart_constant, chart_designer
+      FROM song
+      WHERE title = $parent.title AND chart_type = $parent.chart_type
+    ) AS difficulties
     FROM song
     GROUP BY title, artist, image_name, chart_type
     `)
 
-    // SurrealDB 的 query 回傳通常是雙層陣列 result[0]
     return c.json(result[0] || [])
   } catch (error) {
     console.error('Fetch songs error:', error)
