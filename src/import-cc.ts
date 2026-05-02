@@ -33,7 +33,7 @@ async function importCC() {
     // 🌟 軌道 1：解析 STANDARD (標準) 譜面
     for (const diff of DIFFS) {
       const ccString = song[`lev_${diff.key}_i`]
-      if (!ccString) continue // 如果沒有這個難度，就跳過
+      if (!ccString) continue
 
         const finalCC = parseFloat(ccString)
         if (isNaN(finalCC)) continue
@@ -42,7 +42,6 @@ async function importCC() {
           const designer = song[`lev_${diff.key}_designer`] || ''
           const songKey = `${title}_STANDARD_${diff.name}`
 
-          // 更新歌曲資料 (寫入圖片 Hash 碼)
           await db.query(`
           UPSERT $id SET
           title = $title,
@@ -52,29 +51,27 @@ async function importCC() {
           version = $version,
           chart_constant = $cc,
           image_name = $image_name,
-          chart_type = 'STANDARD'
+          chart_type = 'STANDARD',
+          difficulty = $difficulty,
+          level = $level,
+          chart_designer = $chart_designer
           `, {
             id: new RecordId('song', songKey),
-                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName,
+                         title,
+                         artist, // ✅ 補上 artist 變數
+                         genre, bpm, version, cc: finalCC, image_name: finalImageName,
                          difficulty: diff.name, level: levelString, chart_designer: designer
           })
           songUpdated++
 
-          // 將最新的定數同步給使用者的成績
           await db.query(`
-          UPDATE score SET
-          chart_constant = $cc,
-          version = $version
-          WHERE song = $song
-          `, {
-            cc: finalCC, version, song: new RecordId('song', songKey)
-          })
+          UPDATE score SET chart_constant = $cc, version = $version WHERE song = $song
+          `, { cc: finalCC, version, song: new RecordId('song', songKey) })
           scoreUpdated++
     }
 
     // 🌟 軌道 2：解析 DX (でらっくす) 譜面
     for (const diff of DIFFS) {
-      // 關鍵！尋找 dx_lev_ 開頭的屬性
       const ccString = song[`dx_lev_${diff.key}_i`]
       if (!ccString) continue
 
@@ -85,7 +82,6 @@ async function importCC() {
           const designer = song[`dx_lev_${diff.key}_designer`] || ''
           const songKey = `${title}_DX_${diff.name}`
 
-          // 更新歌曲資料 (寫入圖片 Hash 碼)
           await db.query(`
           UPSERT $id SET
           title = $title,
@@ -95,23 +91,22 @@ async function importCC() {
           version = $version,
           chart_constant = $cc,
           image_name = $image_name,
-          chart_type = 'DX'
+          chart_type = 'DX',
+          difficulty = $difficulty,
+          level = $level,
+          chart_designer = $chart_designer
           `, {
             id: new RecordId('song', songKey),
-                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName,
-            difficulty: diff.name, level: levelString, chart_designer: designer
+                         title,
+                         artist, // ✅ 補上 artist 變數
+                         genre, bpm, version, cc: finalCC, image_name: finalImageName,
+                         difficulty: diff.name, level: levelString, chart_designer: designer
           })
           songUpdated++
 
-          // 將最新的定數同步給使用者的成績
           await db.query(`
-          UPDATE score SET
-          chart_constant = $cc,
-          version = $version
-          WHERE song = $song
-          `, {
-            cc: finalCC, version, song: new RecordId('song', songKey)
-          })
+          UPDATE score SET chart_constant = $cc, version = $version WHERE song = $song
+          `, { cc: finalCC, version, song: new RecordId('song', songKey) })
           scoreUpdated++
     }
   }
