@@ -38,6 +38,8 @@ async function importCC() {
         const finalCC = parseFloat(ccString)
         if (isNaN(finalCC)) continue
 
+          const levelString = song[`lev_${diff.key}`] || ''
+          const designer = song[`lev_${diff.key}_designer`] || ''
           const songKey = `${title}_STANDARD_${diff.name}`
 
           // 更新歌曲資料 (寫入圖片 Hash 碼)
@@ -53,7 +55,8 @@ async function importCC() {
           chart_type = 'STANDARD'
           `, {
             id: new RecordId('song', songKey),
-                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName
+                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName,
+                         difficulty: diff.name, level: levelString, chart_designer: designer
           })
           songUpdated++
 
@@ -78,6 +81,8 @@ async function importCC() {
         const finalCC = parseFloat(ccString)
         if (isNaN(finalCC)) continue
 
+          const levelString = song[`dx_lev_${diff.key}`] || ''
+          const designer = song[`dx_lev_${diff.key}_designer`] || ''
           const songKey = `${title}_DX_${diff.name}`
 
           // 更新歌曲資料 (寫入圖片 Hash 碼)
@@ -93,7 +98,8 @@ async function importCC() {
           chart_type = 'DX'
           `, {
             id: new RecordId('song', songKey),
-                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName
+                         title, genre, bpm, version, cc: finalCC, image_name: finalImageName,
+            difficulty: diff.name, level: levelString, chart_designer: designer
           })
           songUpdated++
 

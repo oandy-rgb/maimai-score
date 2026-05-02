@@ -23,6 +23,9 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS image_name ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS artist ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS chart_type ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS difficulty ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS level ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS chart_designer ON song TYPE option<string>;
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;
     DEFINE TABLE IF NOT EXISTS score SCHEMAFULL
