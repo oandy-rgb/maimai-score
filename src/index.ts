@@ -198,25 +198,44 @@ app.get('/b50', async (c) => {
 
 app.get('/api/songs', async (c) => {
   try {
-    // 🌟 升級版查詢：不只拿基本資訊，還要把五個難度的資料打包進來！
-    // 我們利用 SurrealDB 的子查詢 (Subquery) 來達成
+    // 🚀 1. 拔掉導致崩潰的子查詢，直接一次撈出所有資料 (極速！)
     const result = await db.query(`
-    SELECT
-    title,
-    artist,
-    image_name,
-    chart_type,
-    -- 使用 subquery 找出與這首歌同名且同類型的所有難度，並提取 chart_constant 和 level
-    (
-      SELECT difficulty, level, chart_constant, chart_designer
-      FROM song
-      WHERE title = $parent.title AND chart_type = $parent.chart_type
-    ) AS difficulties
+    SELECT title, artist, image_name, chart_type, difficulty, level, chart_constant, chart_designer
     FROM song
-    GROUP BY title, artist, image_name, chart_type
     `)
 
-    return c.json(result[0] || [])
+    const allCharts = result[0] as any[]
+
+    // 🚀 2. 用 JS Map 瞬間分組 (時間複雜度 O(N)，不會逾時)
+    const songMap = new Map<string, any>()
+
+    for (const chart of allCharts) {
+      const key = `${chart.title}_${chart.chart_type}`
+
+      if (!songMap.has(key)) {
+        // 如果是第一次遇到這首歌，建立卡片基本資料，並準備一個空的 difficulties 陣列
+        songMap.set(key, {
+          id: key,
+          title: chart.title,
+          artist: chart.artist,
+          image_name: chart.image_name,
+          chart_type: chart.chart_type,
+          difficulties: []
+        })
+      }
+
+      // 把難度細節塞進這首歌的陣列裡
+      songMap.get(key).difficulties.push({
+        difficulty: chart.difficulty,
+        level: chart.level,
+        chart_constant: chart.chart_constant,
+        chart_designer: chart.chart_designer
+      })
+    }
+
+    // 🚀 3. 把整理好的 Map 轉回陣列，送給前端
+    return c.json(Array.from(songMap.values()))
+
   } catch (error) {
     console.error('Fetch songs error:', error)
     return c.json({ error: '無法獲取歌曲資料' }, 500)
