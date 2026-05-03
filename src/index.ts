@@ -11,6 +11,15 @@ const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secre
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 
 const app = new Hono()
+
+app.use('*', cors({
+  origin: '*', // 允許所有來源
+  allowHeaders: ['Content-Type', 'Authorization'], // 允許前端帶 Token 過來
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // 允許 OPTIONS 預檢請求
+  exposeHeaders: ['Content-Length'],
+  maxAge: 600,
+}))
+
 connectDB()
 .then(() => initSchema())
 .catch((err) => {
