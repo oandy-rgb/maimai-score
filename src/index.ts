@@ -241,4 +241,57 @@ app.get('/api/songs', async (c) => {
     return c.json({ error: '無法獲取歌曲資料' }, 500)
   }
 })
+
+// src/index.ts (新增一個路由)
+
+app.get('/api/songs/search', async (c) => {
+  const keyword = c.req.query('q')
+
+  if (!keyword) {
+    return c.json([]) // 沒關鍵字就回傳空陣列
+  }
+
+  try {
+    // 🌟 關鍵語法：使用 @@ (MATCHES) 運算子，以及 search::score() 算分
+    const result = await db.query(`
+    SELECT
+    title, artist, image_name, chart_type, difficulty,
+    level, chart_constant, chart_designer,
+    search::score(1) AS relevance_score
+    FROM song
+    WHERE title @@ $keyword OR artist @@ $keyword
+    ORDER BY relevance_score DESC
+    LIMIT 100
+    `, { keyword })
+
+    const matchedCharts = result[0] as any[]
+
+    // ⬇️ 下面這段跟你原本 /api/songs 的分組邏輯一模一樣
+    const songMap = new Map<string, any>()
+    for (const chart of matchedCharts) {
+      const key = `${chart.title}_${chart.chart_type}`
+      if (!songMap.has(key)) {
+        songMap.set(key, {
+          id: key,
+          title: chart.title,
+          artist: chart.artist,
+          image_name: chart.image_name,
+          chart_type: chart.chart_type,
+          difficulties: []
+        })
+      }
+      songMap.get(key).difficulties.push({
+        difficulty: chart.difficulty,
+        level: chart.level,
+        chart_constant: chart.chart_constant,
+        chart_designer: chart.chart_designer
+      })
+    }
+
+    return c.json(Array.from(songMap.values()))
+  } catch (error) {
+    console.error('Search error:', error)
+    return c.json({ error: '搜尋失敗' }, 500)
+  }
+})
 export default app
