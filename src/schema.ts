@@ -50,12 +50,11 @@ export async function initSchema() {
     TOKENIZERS blank, camel, class, punct
     FILTERS lowercase, ascii;
 
-    -- 🌟 [新增] 全文檢索索引 (Full-Text Search Index)
-    -- 讓 title 和 artist 支援 @@ 模糊搜尋，並使用 BM25 演算法排序
-    DEFINE INDEX IF NOT EXISTS song_fts_idx ON song
+    // 2. Define the Index using the analyzer
+    // In SurrealDB 3.0, the SEARCH keyword is used within the DEFINE INDEX statement.
+    DEFINE INDEX IF NOT EXISTS song_fts_idx ON TABLE song
     FIELDS title, artist
-    SEARCH ANALYZER song_search_analyzer BM25;
-
+    SEARCH ANALYZER song_search_analyzer BM
 
     -- ==========================================
     -- 🏆 玩家成績資料表 (Score)
