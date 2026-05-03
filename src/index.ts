@@ -11,8 +11,11 @@ const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secre
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 
 const app = new Hono()
-connectDB().then(() => initSchema())
-app.use('*', cors())
+connectDB()
+.then(() => initSchema())
+.catch((err) => {
+  console.error('❌ 資料庫初始化失敗，請檢查 Schema 語法：', err)
+})
 
 function calcRating(cc: number, achievement: number): number {
   const a = Math.min(achievement, 100.5)
@@ -248,18 +251,18 @@ app.get('/api/songs/search', async (c) => {
   const keyword = c.req.query('q')
 
   if (!keyword) {
-    return c.json([]) // 沒關鍵字就回傳空陣列
+    return c.json([])
   }
 
   try {
-    // 🌟 關鍵語法：使用 @@ (MATCHES) 運算子，以及 search::score() 算分
+    // 🌟 注意這裡的 WHERE 條件，從 @@ 改成了 @1@
     const result = await db.query(`
     SELECT
     title, artist, image_name, chart_type, difficulty,
     level, chart_constant, chart_designer,
     search::score(1) AS relevance_score
     FROM song
-    WHERE title @@ $keyword OR artist @@ $keyword
+    WHERE title @1@ $keyword OR artist @1@ $keyword
     ORDER BY relevance_score DESC
     LIMIT 100
     `, { keyword })
