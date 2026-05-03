@@ -36,6 +36,12 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS difficulty ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS level ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS chart_designer ON song TYPE option<string>;
+    // 在 song table 的 DEFINE FIELD 區塊加上：
+    DEFINE FIELD IF NOT EXISTS notes_tap ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS notes_hold ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS notes_slide ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS notes_touch ON song TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS notes_break ON song TYPE option<number>;
 
     -- [一般索引] 加速精確比對
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;

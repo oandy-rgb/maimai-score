@@ -212,7 +212,7 @@ app.get('/api/songs', async (c) => {
   try {
     // 🚀 1. 拔掉導致崩潰的子查詢，直接一次撈出所有資料 (極速！)
     const result = await db.query(`
-    SELECT title, artist, image_name, chart_type, difficulty, level, chart_constant, chart_designer
+    SELECT title, artist, image_name, chart_type, difficulty, level, chart_constant, chart_designer, notes_tap, notes_hold, notes_slide, notes_touch, notes_break
     FROM song
     `)
 
@@ -241,7 +241,12 @@ app.get('/api/songs', async (c) => {
         difficulty: chart.difficulty,
         level: chart.level,
         chart_constant: chart.chart_constant,
-        chart_designer: chart.chart_designer
+        chart_designer: chart.chart_designer,
+        notes_tap: chart.notes_tap,
+        notes_hold: chart.notes_hold,
+        notes_slide: chart.notes_slide,
+        notes_touch: chart.notes_touch,
+        notes_break: chart.notes_break,
       })
     }
 
@@ -254,7 +259,24 @@ app.get('/api/songs', async (c) => {
   }
 })
 
-// src/index.ts (新增一個路由)
+app.get('/api/scores/all', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const playerKey = playerId.split(':')[1]
+    const result = await db.query(`
+    SELECT
+    song.title AS title,
+    song.chart_type AS chart_type,
+    achievement,
+    difficulty,
+    fc
+    FROM score
+    WHERE player = $player
+    `, { player: new RecordId('player', playerKey) })
+
+    return c.json(result[0])
+})
 
 app.get('/api/songs/search', async (c) => {
   const keyword = c.req.query('q')
@@ -266,9 +288,9 @@ app.get('/api/songs/search', async (c) => {
   try {
     // 🌟 注意這裡的 WHERE 條件，從 @@ 改成了 @1@
     const result = await db.query(`
-    SELECT
-    title, artist, image_name, chart_type, difficulty,
+    SELECT title, artist, image_name, chart_type, difficulty,
     level, chart_constant, chart_designer,
+    notes_tap, notes_hold, notes_slide, notes_touch, notes_break,
     search::score(1) AS relevance_score
     FROM song
     WHERE title @1@ $keyword OR artist @1@ $keyword
@@ -296,7 +318,12 @@ app.get('/api/songs/search', async (c) => {
         difficulty: chart.difficulty,
         level: chart.level,
         chart_constant: chart.chart_constant,
-        chart_designer: chart.chart_designer
+        chart_designer: chart.chart_designer,
+        notes_tap: chart.notes_tap,
+        notes_hold: chart.notes_hold,
+        notes_slide: chart.notes_slide,
+        notes_touch: chart.notes_touch,
+        notes_break: chart.notes_break,
       })
     }
 

@@ -11,8 +11,12 @@ const DIFFS = [
 { key: 'remas', name: 'REMASTER' },
 ]
 
+
 async function importCC() {
   await connectDB()
+
+  console.log(`🗑️ 清空舊資料...`)
+  await db.query(`DELETE song`)  // ← 移到這裡
 
   console.log(`🔥 正在從 otoge-db 下載最強國際服扁平化資料...`)
   const res = await fetch(INTL_DB_URL, { cache: "no-store" })
@@ -41,6 +45,11 @@ async function importCC() {
           const levelString = song[`lev_${diff.key}`] || ''
           const designer = song[`lev_${diff.key}_designer`] || ''
           const songKey = `${title}_STANDARD_${diff.name}`
+          const notes_tap    = parseInt(song[`lev_${diff.key}_notes_tap`]) || null
+          const notes_hold   = parseInt(song[`lev_${diff.key}_notes_hold`]) || null
+          const notes_slide  = parseInt(song[`lev_${diff.key}_notes_slide`]) || null
+          const notes_touch  = null  // STANDARD 沒有 Touch
+          const notes_break  = parseInt(song[`lev_${diff.key}_notes_break`]) || null
 
           await db.query(`
           UPSERT $id SET
@@ -55,12 +64,17 @@ async function importCC() {
           difficulty = $difficulty,
           level = $level,
           chart_designer = $chart_designer
+          notes_tap = $notes_tap,
+          notes_hold = $notes_hold,
+          notes_slide = $notes_slide,
+          notes_touch = $notes_touch,
+          notes_break = $notes_break
           `, {
             id: new RecordId('song', songKey),
                          title,
                          artist, // ✅ 補上 artist 變數
                          genre, bpm, version, cc: finalCC, image_name: finalImageName,
-                         difficulty: diff.name, level: levelString, chart_designer: designer
+                         difficulty: diff.name, level: levelString, chart_designer: designer,notes_tap, notes_hold, notes_slide, notes_touch, notes_break
           })
           songUpdated++
 
@@ -81,6 +95,11 @@ async function importCC() {
           const levelString = song[`dx_lev_${diff.key}`] || ''
           const designer = song[`dx_lev_${diff.key}_designer`] || ''
           const songKey = `${title}_DX_${diff.name}`
+          const notes_tap    = parseInt(song[`dx_lev_${diff.key}_notes_tap`]) || null
+          const notes_hold   = parseInt(song[`dx_lev_${diff.key}_notes_hold`]) || null
+          const notes_slide  = parseInt(song[`dx_lev_${diff.key}_notes_slide`]) || null
+          const notes_touch  = parseInt(song[`dx_lev_${diff.key}_notes_touch`]) || null
+          const notes_break  = parseInt(song[`dx_lev_${diff.key}_notes_break`]) || null
 
           await db.query(`
           UPSERT $id SET
@@ -95,12 +114,17 @@ async function importCC() {
           difficulty = $difficulty,
           level = $level,
           chart_designer = $chart_designer
+          notes_tap = $notes_tap,
+          notes_hold = $notes_hold,
+          notes_slide = $notes_slide,
+          notes_touch = $notes_touch,
+          notes_break = $notes_break
           `, {
             id: new RecordId('song', songKey),
                          title,
                          artist, // ✅ 補上 artist 變數
                          genre, bpm, version, cc: finalCC, image_name: finalImageName,
-                         difficulty: diff.name, level: levelString, chart_designer: designer
+                         difficulty: diff.name, level: levelString, chart_designer: designer,notes_tap, notes_hold, notes_slide, notes_touch, notes_break
           })
           songUpdated++
 
