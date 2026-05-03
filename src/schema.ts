@@ -54,7 +54,7 @@ export async function initSchema() {
     // In SurrealDB 3.0, the SEARCH keyword is used within the DEFINE INDEX statement.
     DEFINE INDEX IF NOT EXISTS song_fts_idx ON TABLE song
     FIELDS title, artist
-    SEARCH ANALYZER song_search_analyzer BM
+    SEARCH ANALYZER song_search_analyzer BM25;
 
     -- ==========================================
     -- 🏆 玩家成績資料表 (Score)
