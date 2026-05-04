@@ -45,11 +45,11 @@ async function importCC() {
           const levelString = song[`lev_${diff.key}`] || ''
           const designer = song[`lev_${diff.key}_designer`] || ''
           const songKey = `${title}_STANDARD_${diff.name}`
-          const notes_tap    = parseInt(song[`lev_${diff.key}_notes_tap`]) || null
-          const notes_hold   = parseInt(song[`lev_${diff.key}_notes_hold`]) || null
-          const notes_slide  = parseInt(song[`lev_${diff.key}_notes_slide`]) || null
-          const notes_touch  = null  // STANDARD 沒有 Touch
-          const notes_break  = parseInt(song[`lev_${diff.key}_notes_break`]) || null
+          const notes_tap    = parseInt(song[`lev_${diff.key}_notes_tap`]) || undefined
+          const notes_hold   = parseInt(song[`lev_${diff.key}_notes_hold`]) || undefined
+          const notes_slide  = parseInt(song[`lev_${diff.key}_notes_slide`]) || undefined
+          const notes_touch  = undefined
+          const notes_break  = parseInt(song[`lev_${diff.key}_notes_break`]) || undefined
 
           await db.query(`
           UPSERT $id SET
@@ -63,7 +63,7 @@ async function importCC() {
           chart_type = 'STANDARD',
           difficulty = $difficulty,
           level = $level,
-          chart_designer = $chart_designer
+          chart_designer = $chart_designer,
           notes_tap = $notes_tap,
           notes_hold = $notes_hold,
           notes_slide = $notes_slide,
@@ -95,11 +95,11 @@ async function importCC() {
           const levelString = song[`dx_lev_${diff.key}`] || ''
           const designer = song[`dx_lev_${diff.key}_designer`] || ''
           const songKey = `${title}_DX_${diff.name}`
-          const notes_tap    = parseInt(song[`dx_lev_${diff.key}_notes_tap`]) || null
-          const notes_hold   = parseInt(song[`dx_lev_${diff.key}_notes_hold`]) || null
-          const notes_slide  = parseInt(song[`dx_lev_${diff.key}_notes_slide`]) || null
-          const notes_touch  = parseInt(song[`dx_lev_${diff.key}_notes_touch`]) || null
-          const notes_break  = parseInt(song[`dx_lev_${diff.key}_notes_break`]) || null
+          const notes_tap    = parseInt(song[`dx_lev_${diff.key}_notes_tap`]) || undefined
+          const notes_hold   = parseInt(song[`dx_lev_${diff.key}_notes_hold`]) || undefined
+          const notes_slide  = parseInt(song[`dx_lev_${diff.key}_notes_slide`]) || undefined
+          const notes_touch  = parseInt(song[`dx_lev_${diff.key}_notes_touch`]) || undefined
+          const notes_break  = parseInt(song[`dx_lev_${diff.key}_notes_break`]) || undefined
 
           await db.query(`
           UPSERT $id SET
@@ -113,7 +113,7 @@ async function importCC() {
           chart_type = 'DX',
           difficulty = $difficulty,
           level = $level,
-          chart_designer = $chart_designer
+          chart_designer = $chart_designer,
           notes_tap = $notes_tap,
           notes_hold = $notes_hold,
           notes_slide = $notes_slide,

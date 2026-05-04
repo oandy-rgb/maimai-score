@@ -86,6 +86,7 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS chart_constant ON score TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS version ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS fc ON score TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS sync ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS updated_at ON score TYPE datetime DEFAULT time::now();
 
     -- 確保同一個玩家在同一張譜面只會有一筆成績紀錄

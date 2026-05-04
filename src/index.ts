@@ -13,9 +13,9 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 const app = new Hono()
 
 app.use('*', cors({
-  origin: '*', // 允許所有來源
-  allowHeaders: ['Content-Type', 'Authorization'], // 允許前端帶 Token 過來
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // 允許 OPTIONS 預檢請求
+  origin: '*',
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   exposeHeaders: ['Content-Length'],
   maxAge: 600,
 }))
@@ -30,28 +30,28 @@ function calcRating(cc: number, achievement: number): number {
   const a = Math.min(achievement, 100.5)
   let multiplier: number
   if (a >= 100.5) multiplier = 22.4
-    else if (a >= 100.0) multiplier = 21.6
-      else if (a >= 99.5) multiplier = 21.1
-        else if (a >= 99.0) multiplier = 20.8
-          else if (a >= 98.0) multiplier = 20.3
-            else if (a >= 97.0) multiplier = 20.0
-              else if (a >= 94.0) multiplier = 16.8
-                else if (a >= 90.0) multiplier = 15.2
-                  else if (a >= 80.0) multiplier = 13.6
-                    else multiplier = 0
-                      return Math.floor(cc * multiplier * a / 100)
+  else if (a >= 100.0) multiplier = 21.6
+  else if (a >= 99.5) multiplier = 21.1
+  else if (a >= 99.0) multiplier = 20.8
+  else if (a >= 98.0) multiplier = 20.3
+  else if (a >= 97.0) multiplier = 20.0
+  else if (a >= 94.0) multiplier = 16.8
+  else if (a >= 90.0) multiplier = 15.2
+  else if (a >= 80.0) multiplier = 13.6
+  else multiplier = 0
+  return Math.floor(cc * multiplier * a / 100)
 }
 
 async function getPlayerFromToken(c: any): Promise<string | null> {
   const auth = c.req.header('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
-    try {
-      const token = auth.slice(7)
-      const { payload } = await jwtVerify(token, JWT_SECRET)
-      return payload.playerId as string
-    } catch {
-      return null
-    }
+  try {
+    const token = auth.slice(7)
+    const { payload } = await jwtVerify(token, JWT_SECRET)
+    return payload.playerId as string
+  } catch {
+    return null
+  }
 }
 
 app.get('/health', async (c) => {
@@ -123,7 +123,6 @@ app.post('/api/scores/sync', async (c) => {
     const difficulty = score.difficulty?.toUpperCase()
     const songKey = `${score.title}_${chartType}_${difficulty}`
     try {
-      // 不再 INSERT song，song 由 import-cc.ts 管理
       await db.query(`
       INSERT INTO score {
         player: $player,
@@ -132,19 +131,22 @@ app.post('/api/scores/sync', async (c) => {
         chart_type: $chart_type,
         level: $level,
         achievement: $achievement,
-        fc: $fc
+        fc: $fc,
+        sync: $sync
       } ON DUPLICATE KEY UPDATE
       achievement = $input.achievement,
       fc = $input.fc,
+      sync = $input.sync,
       updated_at = time::now()
       `, {
         player: new RecordId('player', playerId.split(':')[1]),
-                     song: new RecordId('song', songKey),
-                     difficulty,        // 已經 toUpperCase() 過的
-                     chart_type: chartType,  // 已經 toUpperCase() 過的
-                     level: score.level,
-                     achievement: score.achievement,
-                     fc: score.fc || "",
+        song: new RecordId('song', songKey),
+        difficulty,
+        chart_type: chartType,
+        level: score.level,
+        achievement: score.achievement,
+        fc: score.fc || null,
+        sync: score.sync || null,
       })
       success++
     } catch(e) {
@@ -153,7 +155,6 @@ app.post('/api/scores/sync', async (c) => {
     }
   }
   console.log(`✅ 存入 ${success} 筆，失敗 ${failed} 筆`)
-  // 同步完後自動從 song 表複製 CC 和 version
   await db.query(`
   UPDATE score SET
   chart_constant = song.chart_constant,
@@ -165,18 +166,16 @@ app.post('/api/scores/sync', async (c) => {
 
 app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
-  console.log('b50 playerId:', playerId)
   if (!playerId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
   const playerKey = playerId.split(':')[1]
-  console.log('b50 playerKey:', playerKey)
 
   const result = await db.query(`
   SELECT
-  id, achievement, chart_type, difficulty, level, chart_constant, version, fc,
+  id, achievement, chart_type, difficulty, level, chart_constant, version, fc, sync,
   song.title AS title,
-  song.image_name AS image_name  -- ✅ 把關聯的圖片檔名拉出來
+  song.image_name AS image_name
   FROM score
   WHERE chart_constant != NONE
   AND player = $player
@@ -186,15 +185,12 @@ app.get('/b50', async (c) => {
   const scores = result[0] as any[]
 
   const withRating = scores.map(s => {
-    // 1. 先在這裡把這首歌的 version 轉成數字 (必須寫在 map 裡面)
-    const versionNum = parseInt(s.version) || 0;
-
-    // 2. 加上 return，把整包物件回傳出去
+    const versionNum = parseInt(s.version) || 0
     return {
       ...s,
       rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
-                                isNew: versionNum >= 25500,
-    };
+      isNew: versionNum >= 25500,
+    }
   })
   const newScores = withRating
   .filter(s => s.isNew)
@@ -210,22 +206,17 @@ app.get('/b50', async (c) => {
 
 app.get('/api/songs', async (c) => {
   try {
-    // 🚀 1. 拔掉導致崩潰的子查詢，直接一次撈出所有資料 (極速！)
     const result = await db.query(`
     SELECT title, artist, image_name, chart_type, difficulty, level, chart_constant, chart_designer, notes_tap, notes_hold, notes_slide, notes_touch, notes_break
     FROM song
     `)
 
     const allCharts = result[0] as any[]
-
-    // 🚀 2. 用 JS Map 瞬間分組 (時間複雜度 O(N)，不會逾時)
     const songMap = new Map<string, any>()
 
     for (const chart of allCharts) {
       const key = `${chart.title}_${chart.chart_type}`
-
       if (!songMap.has(key)) {
-        // 如果是第一次遇到這首歌，建立卡片基本資料，並準備一個空的 difficulties 陣列
         songMap.set(key, {
           id: key,
           title: chart.title,
@@ -235,8 +226,6 @@ app.get('/api/songs', async (c) => {
           difficulties: []
         })
       }
-
-      // 把難度細節塞進這首歌的陣列裡
       songMap.get(key).difficulties.push({
         difficulty: chart.difficulty,
         level: chart.level,
@@ -250,9 +239,7 @@ app.get('/api/songs', async (c) => {
       })
     }
 
-    // 🚀 3. 把整理好的 Map 轉回陣列，送給前端
     return c.json(Array.from(songMap.values()))
-
   } catch (error) {
     console.error('Fetch songs error:', error)
     return c.json({ error: '無法獲取歌曲資料' }, 500)
@@ -263,30 +250,27 @@ app.get('/api/scores/all', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
 
-    const playerKey = playerId.split(':')[1]
-    const result = await db.query(`
-    SELECT
-    song.title AS title,
-    song.chart_type AS chart_type,
-    achievement,
-    difficulty,
-    fc
-    FROM score
-    WHERE player = $player
-    `, { player: new RecordId('player', playerKey) })
+  const playerKey = playerId.split(':')[1]
+  const result = await db.query(`
+  SELECT
+  song.title AS title,
+  song.chart_type AS chart_type,
+  achievement,
+  difficulty,
+  fc,
+  sync
+  FROM score
+  WHERE player = $player
+  `, { player: new RecordId('player', playerKey) })
 
-    return c.json(result[0])
+  return c.json(result[0])
 })
 
 app.get('/api/songs/search', async (c) => {
   const keyword = c.req.query('q')
-
-  if (!keyword) {
-    return c.json([])
-  }
+  if (!keyword) return c.json([])
 
   try {
-    // 🌟 注意這裡的 WHERE 條件，從 @@ 改成了 @1@
     const result = await db.query(`
     SELECT title, artist, image_name, chart_type, difficulty,
     level, chart_constant, chart_designer,
@@ -299,8 +283,6 @@ app.get('/api/songs/search', async (c) => {
     `, { keyword })
 
     const matchedCharts = result[0] as any[]
-
-    // ⬇️ 下面這段跟你原本 /api/songs 的分組邏輯一模一樣
     const songMap = new Map<string, any>()
     for (const chart of matchedCharts) {
       const key = `${chart.title}_${chart.chart_type}`
@@ -333,4 +315,5 @@ app.get('/api/songs/search', async (c) => {
     return c.json({ error: '搜尋失敗' }, 500)
   }
 })
+
 export default app
