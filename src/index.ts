@@ -145,8 +145,8 @@ app.post('/api/scores/sync', async (c) => {
         chart_type: chartType,
         level: score.level,
         achievement: score.achievement,
-        fc: score.fc || null,
-        sync: score.sync || null,
+        fc: score.fc || undefined,
+        sync: score.sync || undefined,
       })
       success++
     } catch(e) {
