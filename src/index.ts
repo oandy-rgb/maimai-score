@@ -204,7 +204,17 @@ app.get('/b50', async (c) => {
   return c.json({ totalRating, newScores, oldScores })
 })
 
+// 在 app 定義之後，endpoint 之前加這個
+let _songsCache: any[] | null = null
+let _songsCacheAt = 0
+const SONGS_CACHE_TTL = 60 * 60 * 1000 // 1小時
+
 app.get('/api/songs', async (c) => {
+  const now = Date.now()
+  if (_songsCache && now - _songsCacheAt < SONGS_CACHE_TTL) {
+    return c.json(_songsCache)
+  }
+
   try {
     const result = await db.query(`
     SELECT title, artist, image_name, chart_type, difficulty, level, chart_constant, chart_designer, notes_tap, notes_hold, notes_slide, notes_touch, notes_break
@@ -239,7 +249,9 @@ app.get('/api/songs', async (c) => {
       })
     }
 
-    return c.json(Array.from(songMap.values()))
+    _songsCache = Array.from(songMap.values())
+    _songsCacheAt = now
+    return c.json(_songsCache)
   } catch (error) {
     console.error('Fetch songs error:', error)
     return c.json({ error: '無法獲取歌曲資料' }, 500)
@@ -316,4 +328,10 @@ app.get('/api/songs/search', async (c) => {
   }
 })
 
+app.post('/api/songs/cache/clear', async (c) => {
+  _songsCache = null
+  _songsCacheAt = 0
+  console.log('✅ songs cache cleared')
+  return c.json({ ok: true })
+})
 export default app
