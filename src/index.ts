@@ -459,4 +459,138 @@ app.get('/api/friends/pending', async (c) => {
     return c.json(result[0])
 })
 
+
+
+
+// ==========================================
+// 👥 好友 B50
+// ==========================================
+
+app.get('/api/friends/:friendId/b50', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = playerId.split(':')[1]
+    const friendId = c.req.param('friendId')
+
+    const friendCheck = await db.query(`
+    SELECT id FROM friendship
+    WHERE (
+      (from_player = $player AND to_player = $friend) OR
+      (from_player = $friend AND to_player = $player)
+    ) AND status = 'accepted'
+    LIMIT 1
+    `, {
+      player: new RecordId('player', playerKey),
+                                       friend: new RecordId('player', friendId),
+    })
+
+    if (!(friendCheck[0] as any[]).length) {
+      return c.json({ error: 'Not friends' }, 403)
+    }
+
+    const result = await db.query(`
+    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, sync,
+    song.title AS title, song.image_name AS image_name
+    FROM score
+    WHERE chart_constant != NONE AND player = $friend
+    ORDER BY achievement DESC
+    `, { friend: new RecordId('player', friendId) })
+
+    const scores = result[0] as any[]
+    const withRating = scores.map(s => {
+      const versionNum = parseInt(s.version) || 0
+      return {
+        ...s,
+        rating: calcRating(s.chart_constant, s.achievement) + (s.fc === 'ap' || s.fc === 'app' ? 1 : 0),
+                                  isNew: versionNum >= 25500,
+      }
+    })
+    const newScores = withRating.filter(s => s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 15)
+    const oldScores = withRating.filter(s => !s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 35)
+    const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
+    return c.json({ totalRating, newScores, oldScores })
+})
+
+export default app
+
+// 好友全部成績
+app.get('/api/friends/:friendId/scores', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = playerId.split(':')[1]
+    const friendId = c.req.param('friendId')
+
+    const friendCheck = await db.query(`
+    SELECT id FROM friendship
+    WHERE (
+      (from_player = $player AND to_player = $friend) OR
+      (from_player = $friend AND to_player = $player)
+    ) AND status = 'accepted' LIMIT 1
+    `, {
+      player: new RecordId('player', playerKey),
+                                       friend: new RecordId('player', friendId),
+    })
+    if (!(friendCheck[0] as any[]).length) return c.json({ error: 'Not friends' }, 403)
+
+      const result = await db.query(`
+      SELECT song.title AS title, song.chart_type AS chart_type,
+      achievement, difficulty, fc, sync, song.image_name AS image_name
+      FROM score WHERE player = $friend ORDER BY achievement DESC
+      `, { friend: new RecordId('player', friendId) })
+      return c.json(result[0])
+})
+
+// 好友牌子進度
+app.get('/api/friends/:friendId/badge', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = playerId.split(':')[1]
+    const friendId = c.req.param('friendId')
+
+    const friendCheck = await db.query(`
+    SELECT id FROM friendship
+    WHERE (
+      (from_player = $player AND to_player = $friend) OR
+      (from_player = $friend AND to_player = $player)
+    ) AND status = 'accepted' LIMIT 1
+    `, {
+      player: new RecordId('player', playerKey),
+                                       friend: new RecordId('player', friendId),
+    })
+    if (!(friendCheck[0] as any[]).length) return c.json({ error: 'Not friends' }, 403)
+
+      const [scoresResult, songsResult] = await Promise.all([
+        db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $friend`,
+                 { friend: new RecordId('player', friendId) }),
+                                                            db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+      ])
+
+      const allCharts = songsResult[0] as any[]
+      const scoreMap = new Map<string, any>()
+      for (const s of scoresResult[0] as any[]) scoreMap.set(s.song.toString(), s)
+
+        const versionMap = new Map<string, any>()
+        for (const chart of allCharts) {
+          const ver = getMainVersion(chart.version ?? '0')
+          if (!versionMap.has(ver)) versionMap.set(ver, { total: 0, sss: 0, fc: 0, ap: 0, app: 0, missing: { sss: [], fc: [], ap: [], app: [] } })
+            const v = versionMap.get(ver)!
+            v.total++
+            const score = scoreMap.get(chart.id.toString())
+            const achievement = score?.achievement ?? 0
+            const fcVal = score?.fc ?? null
+            const syncVal = score?.sync ?? null
+            const info = { title: chart.title, chart_type: chart.chart_type, difficulty: chart.difficulty, image_name: chart.image_name, achievement, fc: fcVal }
+            if (achievement >= 100.0) v.sss++; else v.missing.sss.push(info)
+              if (['fc', 'fcp', 'ap', 'app'].includes(fcVal)) v.fc++; else v.missing.fc.push(info)
+                if (['ap', 'app'].includes(fcVal)) v.ap++; else v.missing.ap.push(info)
+                  if (syncVal === 'fdx' || syncVal === 'fdxp') v.app++; else v.missing.app.push(info)
+        }
+
+        return c.json(
+          Array.from(versionMap.entries())
+          .sort(([a], [b]) => parseInt(a) - parseInt(b))
+          .map(([version, data]) => ({ version, version_name: VERSION_LIST[version] ?? version, ...data }))
+        )
+})
+
 export default app
