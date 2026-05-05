@@ -398,7 +398,10 @@ app.get('/api/players/search', async (c) => {
     const q = c.req.query('q')
     if (!q) return c.json([])
       const result = await db.query(`
-      SELECT id, username FROM player WHERE username ~ $q OR email ~ $q LIMIT 10
+      SELECT id, username FROM player
+      WHERE string::contains(string::lowercase(username), string::lowercase($q))
+      OR string::contains(string::lowercase(email), string::lowercase($q))
+      LIMIT 10
       `, { q })
       return c.json(result[0])
 })
