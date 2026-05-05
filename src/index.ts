@@ -511,7 +511,6 @@ app.get('/api/friends/:friendId/b50', async (c) => {
     return c.json({ totalRating, newScores, oldScores })
 })
 
-export default app
 
 // 好友全部成績
 app.get('/api/friends/:friendId/scores', async (c) => {
