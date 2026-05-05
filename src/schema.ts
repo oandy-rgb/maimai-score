@@ -46,13 +46,8 @@ export async function initSchema() {
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;
 
-    DEFINE ANALYZER IF NOT EXISTS song_search_analyzer
-    TOKENIZERS blank, camel, class, punct
-    FILTERS lowercase, ascii;
 
-    DEFINE INDEX IF NOT EXISTS song_fts_idx ON TABLE song
-    FIELDS title, artist
-    SEARCH ANALYZER song_search_analyzer BM25;
+
 
     -- ==========================================
     -- 🏆 玩家成績資料表 (Score)

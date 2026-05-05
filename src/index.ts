@@ -245,24 +245,6 @@ app.get('/api/songs', async (c) => {
     }
 })
 
-app.get('/api/songs/search', async (c) => {
-  const keyword = c.req.query('q')
-  if (!keyword) return c.json([])
-    try {
-      const result = await db.query(`
-      SELECT title, artist, image_name, chart_type, difficulty, level,
-      chart_constant, chart_designer, aliases,
-      notes_tap, notes_hold, notes_slide, notes_touch, notes_break,
-      search::score(1) AS relevance_score
-      FROM song
-      WHERE title @1@ $keyword OR artist @1@ $keyword
-      ORDER BY relevance_score DESC LIMIT 100
-      `, { keyword })
-      return c.json(buildSongMap(result[0] as any[]))
-    } catch (error) {
-      return c.json({ error: '搜尋失敗' }, 500)
-    }
-})
 
 app.post('/api/songs/cache/clear', async (c) => {
   _songsCache = null
