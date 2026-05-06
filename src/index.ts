@@ -323,68 +323,77 @@ function getMainVersion(ver: string): string {
   return found?.toString() ?? ver
 }
 
+const BADGE_DIFFS = ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER'] as const
+
+function buildBadgeProgress(allCharts: any[], scores: any[]) {
+  const scoreMap = new Map<string, any>()
+  for (const s of scores) scoreMap.set(s.song.toString(), s)
+
+    const versionMap = new Map<string, any>()
+    for (const chart of allCharts) {
+      const ver = getMainVersion(chart.version ?? '0')
+      if (!versionMap.has(ver)) {
+        versionMap.set(ver, {
+          total: 0, sss: 0, fc: 0, ap: 0, app: 0,
+          difficulties: { BASIC: [], ADVANCED: [], EXPERT: [], MASTER: [] },
+        })
+      }
+      const v = versionMap.get(ver)!
+      v.total++
+
+      const score = scoreMap.get(chart.id.toString())
+      const achievement = score?.achievement ?? 0
+      const fcVal = score?.fc ?? null
+      const syncVal = score?.sync ?? null
+
+      const isSss = achievement >= 100.0
+      const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
+      const isAp  = ['ap', 'app'].includes(fcVal)
+      const isApp = syncVal === 'fdx' || syncVal === 'fdxp'
+
+      if (isSss) v.sss++
+        if (isFc)  v.fc++
+          if (isAp)  v.ap++
+            if (isApp) v.app++
+
+              const diff = chart.difficulty as string
+              if (BADGE_DIFFS.includes(diff as any)) {
+                v.difficulties[diff].push({
+                  title: chart.title,
+                  chart_type: chart.chart_type,
+                  image_name: chart.image_name,
+                  achievement,
+                  fc: fcVal,
+                  sync: syncVal,
+                  sss: isSss,
+                  fc_badge: isFc,
+                  ap: isAp,
+                  app: isApp,
+                })
+              }
+    }
+
+    return Array.from(versionMap.entries())
+    .sort(([a], [b]) => parseInt(a) - parseInt(b))
+    .map(([version, data]) => ({
+      version,
+      version_name: VERSION_LIST[version] ?? version,
+      ...data,
+    }))
+}
+
 app.get('/api/badge-progress', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-  const playerKey = playerId.split(':')[1]
+    const playerKey = playerId.split(':')[1]
 
-  const [scoresResult, songsResult] = await Promise.all([
-    db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
-      { player: new RecordId('player', playerKey) }),
-    db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
-  ])
+    const [scoresResult, songsResult] = await Promise.all([
+      db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
+               { player: new RecordId('player', playerKey) }),
+                                                          db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+    ])
 
-  const allCharts = songsResult[0] as any[]
-  const scoreMap = new Map<string, any>()
-  for (const s of scoresResult[0] as any[]) {
-    scoreMap.set(s.song.toString(), s)
-  }
-
-  const versionMap = new Map<string, any>()
-  for (const chart of allCharts) {
-    const ver = getMainVersion(chart.version ?? '0')
-    if (!versionMap.has(ver)) {
-      versionMap.set(ver, {
-        total: 0, sss: 0, fc: 0, ap: 0, app: 0,
-        missing:  { sss: [], fc: [], ap: [], app: [] },
-        achieved: { sss: [], fc: [], ap: [], app: [] },
-      })
-    }
-    const v = versionMap.get(ver)!
-    v.total++
-
-    const score = scoreMap.get(chart.id.toString())
-    const achievement = score?.achievement ?? 0
-    const fcVal = score?.fc ?? null
-    const syncVal = score?.sync ?? null
-    const info = {
-      title: chart.title, chart_type: chart.chart_type,
-      difficulty: chart.difficulty, image_name: chart.image_name,
-      achievement, fc: fcVal
-    }
-
-    if (achievement >= 100.0) { v.sss++; v.achieved.sss.push(info) }
-    else v.missing.sss.push(info)
-
-    if (['fc', 'fcp', 'ap', 'app'].includes(fcVal)) { v.fc++; v.achieved.fc.push(info) }
-    else v.missing.fc.push(info)
-
-    if (['ap', 'app'].includes(fcVal)) { v.ap++; v.achieved.ap.push(info) }
-    else v.missing.ap.push(info)
-
-    if (syncVal === 'fdx' || syncVal === 'fdxp') { v.app++; v.achieved.app.push(info) }
-    else v.missing.app.push(info)
-  }
-
-  return c.json(
-    Array.from(versionMap.entries())
-      .sort(([a], [b]) => parseInt(a) - parseInt(b))
-      .map(([version, data]) => ({
-        version,
-        version_name: VERSION_LIST[version] ?? version,
-        ...data,
-      }))
-  )
+    return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
 })
 
 // ==========================================
@@ -563,32 +572,7 @@ app.get('/api/friends/:friendId/badge', async (c) => {
                                                             db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
       ])
 
-      const allCharts = songsResult[0] as any[]
-      const scoreMap = new Map<string, any>()
-      for (const s of scoresResult[0] as any[]) scoreMap.set(s.song.toString(), s)
-
-        const versionMap = new Map<string, any>()
-        for (const chart of allCharts) {
-          const ver = getMainVersion(chart.version ?? '0')
-          if (!versionMap.has(ver)) versionMap.set(ver, { total: 0, sss: 0, fc: 0, ap: 0, app: 0, missing: { sss: [], fc: [], ap: [], app: [] } })
-            const v = versionMap.get(ver)!
-            v.total++
-            const score = scoreMap.get(chart.id.toString())
-            const achievement = score?.achievement ?? 0
-            const fcVal = score?.fc ?? null
-            const syncVal = score?.sync ?? null
-            const info = { title: chart.title, chart_type: chart.chart_type, difficulty: chart.difficulty, image_name: chart.image_name, achievement, fc: fcVal }
-            if (achievement >= 100.0) v.sss++; else v.missing.sss.push(info)
-              if (['fc', 'fcp', 'ap', 'app'].includes(fcVal)) v.fc++; else v.missing.fc.push(info)
-                if (['ap', 'app'].includes(fcVal)) v.ap++; else v.missing.ap.push(info)
-                  if (syncVal === 'fdx' || syncVal === 'fdxp') v.app++; else v.missing.app.push(info)
-        }
-
-        return c.json(
-          Array.from(versionMap.entries())
-          .sort(([a], [b]) => parseInt(a) - parseInt(b))
-          .map(([version, data]) => ({ version, version_name: VERSION_LIST[version] ?? version, ...data }))
-        )
+      return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
 })
 
 export default app
