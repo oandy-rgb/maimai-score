@@ -481,7 +481,7 @@ app.get('/api/recommend', async (c) => {
         next_achievement: nextMin,
         current_rating: s.rating,
         next_rating: nextRating,
-        rating_gain: nextRating - s.rating,
+        rating_gain: nextRating - threshold,
         gap: parseFloat(gap.toFixed(4)),
         in_b50: s.isNew
         ? newSorted.slice(0, 15).some((x: any) => x.id === s.id)
