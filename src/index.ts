@@ -397,6 +397,108 @@ app.get('/api/badge-progress', async (c) => {
 })
 
 // ==========================================
+// 🎯 推薦系統
+// ==========================================
+
+const RANK_THRESHOLDS = [
+  { rank: 'SSS+', min: 100.5 },
+{ rank: 'SSS',  min: 100.0 },
+{ rank: 'SS+',  min: 99.5  },
+{ rank: 'SS',   min: 99.0  },
+{ rank: 'S+',   min: 98.0  },
+{ rank: 'S',    min: 97.0  },
+{ rank: 'AAA',  min: 94.0  },
+{ rank: 'AA',   min: 90.0  },
+{ rank: 'A',    min: 80.0  },
+{ rank: 'B',    min: 0     },
+]
+
+function getRank(achievement: number): string {
+  return RANK_THRESHOLDS.find(r => achievement >= r.min)?.rank ?? 'B'
+}
+
+function getNextRankThreshold(achievement: number): number | null {
+  for (let i = RANK_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (achievement < RANK_THRESHOLDS[i].min) {
+      return RANK_THRESHOLDS[i].min
+    }
+  }
+  return null // 已經 SSS+
+}
+
+app.get('/api/recommend', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = playerId.split(':')[1]
+
+    const result = await db.query(`
+    SELECT id, achievement, chart_type, difficulty, chart_constant, version, fc, sync,
+    song.title AS title, song.image_name AS image_name
+    FROM score
+    WHERE chart_constant != NONE AND player = $player
+    `, { player: new RecordId('player', playerKey) })
+
+    const scores = result[0] as any[]
+
+    // 算出 B50 門檻
+    const withRating = scores.map(s => {
+      const versionNum = parseInt(s.version) || 0
+      return {
+        ...s,
+        rating: calcRating(s.chart_constant, s.achievement),
+                                  isNew: versionNum >= 25500,
+      }
+    })
+
+    const newSorted = withRating.filter(s => s.isNew).sort((a, b) => b.rating - a.rating)
+    const oldSorted = withRating.filter(s => !s.isNew).sort((a, b) => b.rating - a.rating)
+
+    const newThreshold = newSorted.length >= 15 ? newSorted[14].rating : 0
+    const oldThreshold = oldSorted.length >= 35 ? oldSorted[34].rating : 0
+
+    const newResult: any[] = []
+    const oldResult: any[] = []
+
+    for (const s of withRating) {
+      const nextMin = getNextRankThreshold(s.achievement)
+      if (nextMin === null) continue // 已 SSS+，無法再提升 rank
+
+        const nextRating = calcRating(s.chart_constant, nextMin)
+        const threshold = s.isNew ? newThreshold : oldThreshold
+
+        if (nextRating <= threshold) continue // 打到下一 rank 仍進不了 B50
+
+          const gap = nextMin - s.achievement
+          const entry = {
+            title: s.title,
+            chart_type: s.chart_type,
+            difficulty: s.difficulty,
+            image_name: s.image_name,
+            chart_constant: s.chart_constant,
+            current_achievement: s.achievement,
+            current_rank: getRank(s.achievement),
+        next_rank: getRank(nextMin),
+        next_achievement: nextMin,
+        current_rating: s.rating,
+        next_rating: nextRating,
+        rating_gain: nextRating - s.rating,
+        gap: parseFloat(gap.toFixed(4)),
+        in_b50: s.isNew
+        ? newSorted.slice(0, 15).some((x: any) => x.id === s.id)
+        : oldSorted.slice(0, 35).some((x: any) => x.id === s.id),
+          }
+
+          if (s.isNew) newResult.push(entry)
+            else oldResult.push(entry)
+    }
+
+    newResult.sort((a, b) => a.gap - b.gap)
+    oldResult.sort((a, b) => a.gap - b.gap)
+
+    return c.json({ new: newResult, old: oldResult })
+})
+
+// ==========================================
 // 👥 好友功能
 // ==========================================
 
