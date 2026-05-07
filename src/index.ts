@@ -685,4 +685,37 @@ app.get('/api/friends/:friendId/badge', async (c) => {
       return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
 })
 
+// src/index.ts
+
+// ==========================================
+// 👤 玩家設定
+// ==========================================
+
+
+// 玩家更名 API
+app.patch('/api/player/update-name', async (c) => {
+  const playerId = await getPlayerFromToken(c);
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const { newName } = await c.req.json();
+  const trimmedName = newName?.trim();
+
+  if (!trimmedName || trimmedName.length < 2 || trimmedName.length > 16) {
+    return c.json({ error: '名稱需為 2-16 字' }, 400);
+  }
+
+  try {
+    await db.query(
+      'UPDATE $id SET username = $newName',
+      { id: new RecordId('player', playerId.split(':')[1]), newName: trimmedName }
+    );
+    return c.json({ ok: true });
+  } catch (e: any) {
+    if (e.message?.includes('already contains')) {
+      return c.json({ error: '此名稱已有人使用' }, 409);
+    }
+    return c.json({ error: '系統錯誤' }, 500);
+  }
+});
+
 export default app

@@ -14,6 +14,8 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS email ON player TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS username ON player TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS created_at ON player TYPE datetime DEFAULT time::now();
+    DEFINE INDEX IF NOT EXISTS player_username ON player FIELDS username UNIQUE;
+
 
     -- ==========================================
     -- 🎵 歌曲與譜面資料表 (Song)
