@@ -118,11 +118,11 @@ app.post('/api/scores/sync', async (c) => {
   const playerId = await getPlayerFromToken(c);
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
-  // 🌟 修正點 1: 只讀取一次 json，並解構出需要的資料
+  // 🌟 修正：讀取一次 JSON 並解構出所有欄位
   const { playerName, danImgUrl, iconImgUrl, scores } = await c.req.json();
   const playerKey = playerId.split(':')[1];
 
-  // 1. 更新玩家資訊
+  // 1. 同步更新玩家遊戲內的名稱、段位圖、頭像圖
   if (playerName) {
     await db.query(
       'UPDATE player SET username = $username, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
@@ -135,10 +135,8 @@ app.post('/api/scores/sync', async (c) => {
     );
   }
 
-  // 🌟 修正點 2: 移除重複的 const scores = await c.req.json()，直接使用上方解構出的 scores
+  // 2. 處理分數同步 (移除原本重複的 const scores = await c.req.json())
   let success = 0, failed = 0;
-
-  // 檢查 scores 是否為陣列，防止爬蟲端傳送錯誤格式
   if (Array.isArray(scores)) {
     for (const score of scores) {
       const chartType = score.chart_type?.toUpperCase();
@@ -172,7 +170,7 @@ app.post('/api/scores/sync', async (c) => {
     }
   }
 
-  // 補齊遺漏的數值 (chart_constant, version)
+  // 更新定數與版本資訊
   await db.query(`
   UPDATE score SET chart_constant = song.chart_constant, version = song.version
   WHERE player = $player AND chart_constant = NONE
@@ -197,6 +195,11 @@ app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const playerKey = playerId.split(':')[1]
+    // 🌟 新增：查詢玩家資訊
+    const playerResult = await db.query(`
+    SELECT username, dan_img_url, icon_img_url FROM player WHERE id = $player
+    `, { player: new RecordId('player', playerKey) })
+    const pInfo = (playerResult[0] as any[])[0] || {}
 
     const result = await db.query(`
     SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, sync,
@@ -218,7 +221,14 @@ app.get('/b50', async (c) => {
     const newScores = withRating.filter(s => s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 15)
     const oldScores = withRating.filter(s => !s.isNew).sort((a, b) => b.rating - a.rating).slice(0, 35)
     const totalRating = [...newScores, ...oldScores].reduce((sum, s) => sum + s.rating, 0)
-    return c.json({ totalRating, newScores, oldScores })
+    return c.json({
+      totalRating,
+      newScores,
+      oldScores,
+      username: pInfo.username,
+      dan_img_url: pInfo.dan_img_url,
+      icon_img_url: pInfo.icon_img_url
+    })
 })
 
 // ==========================================
