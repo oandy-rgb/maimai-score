@@ -466,7 +466,17 @@ app.get('/api/recommend', async (c) => {
         const nextRating = calcRating(s.chart_constant, nextMin)
         const threshold = s.isNew ? newThreshold : oldThreshold
 
-        if (nextRating <= threshold) continue // 打到下一 rank 仍進不了 B50
+        // 先判斷這首歌目前是否已經在 B50 榜單內
+        const in_b50 = s.isNew
+        ? newSorted.slice(0, 15).some((x: any) => x.id === s.id)
+        : oldSorted.slice(0, 35).some((x: any) => x.id === s.id)
+
+        // 🌟 核心修正：
+        // - 在 B50 內：實際收益 = (新 Rating - 原本的 Rating)
+        // - 不在 B50 內：實際收益 = (新 Rating - 被擠掉的底線門檻 Threshold)
+        const actual_gain = in_b50 ? (nextRating - s.rating) : (nextRating - threshold)
+
+        if (actual_gain <= 0) continue // 打到下一 rank 仍進不了 B50 或沒進步
 
           const gap = nextMin - s.achievement
           const entry = {
@@ -481,11 +491,9 @@ app.get('/api/recommend', async (c) => {
         next_achievement: nextMin,
         current_rating: s.rating,
         next_rating: nextRating,
-        rating_gain: nextRating - threshold,
+        rating_gain: actual_gain, // 套用正確的收益計算
         gap: parseFloat(gap.toFixed(4)),
-        in_b50: s.isNew
-        ? newSorted.slice(0, 15).some((x: any) => x.id === s.id)
-        : oldSorted.slice(0, 35).some((x: any) => x.id === s.id),
+        in_b50: in_b50,
           }
 
           if (s.isNew) newResult.push(entry)
