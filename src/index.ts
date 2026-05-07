@@ -231,6 +231,41 @@ app.get('/b50', async (c) => {
     })
 })
 
+// src/index.ts
+
+app.get('/api/proxy-image', async (c) => {
+  // 從 Query String 取得想要抓取的圖片網址
+  const targetUrl = c.req.query('url');
+  if (!targetUrl) return c.json({ error: 'Missing URL parameter' }, 400);
+
+  try {
+    // 讓後端發送請求去抓圖片 (加上 User-Agent 模擬一般瀏覽器避免被擋)
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                 // 如果官方圖片有極嚴格的防盜連，可以嘗試在這裡加上 Referer: 'https://maimaidx-eng.com/'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Fetch failed: ${response.statusText}`);
+    }
+
+    // 將圖片轉換為二進位 ArrayBuffer
+    const arrayBuffer = await response.arrayBuffer();
+    const contentType = response.headers.get('Content-Type') || 'image/png';
+
+    // 🌟 關鍵回傳：將二進位資料直接回傳，並加上允許跨域的 Header
+return c.body(arrayBuffer, 200, {
+  'Content-Type': contentType,
+  'Access-Control-Allow-Origin': '*', // 👈 解除 Canvas 封鎖的關鍵
+  'Cache-Control': 'public, max-age=86400' // 快取一天，避免頻繁請求官方伺服器
+});
+  } catch (e) {
+    console.error('Proxy Error:', e);
+    return c.json({ error: 'Failed to proxy image' }, 500);
+  }
+});
 // ==========================================
 // 歌曲
 // ==========================================
