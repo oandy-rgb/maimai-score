@@ -695,7 +695,7 @@ app.get('/api/friends/:friendId/badge', async (c) => {
 // 玩家更名 API
 // src/index.ts
 app.patch('/api/player/update-name', async (c) => {
-  const playerId = await getPlayerFromToken(c); [cite: 10]
+  const playerId = await getPlayerFromToken(c);
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
   const { newName } = await c.req.json();
@@ -708,7 +708,7 @@ app.patch('/api/player/update-name', async (c) => {
 
   try {
     // 執行資料庫更新
-    const idPart = playerId.split(':')[1]; [cite: 10]
+    const idPart = playerId.split(':')[1];
     await db.query(
       'UPDATE player SET username = $newName WHERE id = $id',
       { id: new RecordId('player', idPart), newName: trimmedName }
