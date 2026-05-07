@@ -693,26 +693,31 @@ app.get('/api/friends/:friendId/badge', async (c) => {
 
 
 // 玩家更名 API
+// src/index.ts
 app.patch('/api/player/update-name', async (c) => {
-  const playerId = await getPlayerFromToken(c);
+  const playerId = await getPlayerFromToken(c); [cite: 10]
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
   const { newName } = await c.req.json();
   const trimmedName = newName?.trim();
 
+  // 驗證字數規範
   if (!trimmedName || trimmedName.length < 2 || trimmedName.length > 16) {
     return c.json({ error: '名稱需為 2-16 字' }, 400);
   }
 
   try {
+    // 執行資料庫更新
+    const idPart = playerId.split(':')[1]; [cite: 10]
     await db.query(
-      'UPDATE $id SET username = $newName',
-      { id: new RecordId('player', playerId.split(':')[1]), newName: trimmedName }
+      'UPDATE player SET username = $newName WHERE id = $id',
+      { id: new RecordId('player', idPart), newName: trimmedName }
     );
     return c.json({ ok: true });
   } catch (e: any) {
+    // 如果名稱重複，SurrealDB 會拋出 Index 衝突錯誤
     if (e.message?.includes('already contains')) {
-      return c.json({ error: '此名稱已有人使用' }, 409);
+      return c.json({ error: '此名稱已被佔用' }, 409);
     }
     return c.json({ error: '系統錯誤' }, 500);
   }
