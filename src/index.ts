@@ -115,15 +115,36 @@ app.post('/auth/google', async (c) => {
 // ==========================================
 
 app.post('/api/scores/sync', async (c) => {
-  const playerId = await getPlayerFromToken(c)
-  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+  const playerId = await getPlayerFromToken(c);
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
-    const scores = await c.req.json()
-    let success = 0, failed = 0
+  // 🌟 修正點 1: 只讀取一次 json，並解構出需要的資料
+  const { playerName, danImgUrl, iconImgUrl, scores } = await c.req.json();
+  const playerKey = playerId.split(':')[1];
+
+  // 1. 更新玩家資訊
+  if (playerName) {
+    await db.query(
+      'UPDATE player SET username = $username, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
+      {
+        id: new RecordId('player', playerKey),
+                   username: playerName,
+                   dan: danImgUrl,
+                   icon: iconImgUrl
+      }
+    );
+  }
+
+  // 🌟 修正點 2: 移除重複的 const scores = await c.req.json()，直接使用上方解構出的 scores
+  let success = 0, failed = 0;
+
+  // 檢查 scores 是否為陣列，防止爬蟲端傳送錯誤格式
+  if (Array.isArray(scores)) {
     for (const score of scores) {
-      const chartType = score.chart_type?.toUpperCase()
-      const difficulty = score.difficulty?.toUpperCase()
-      const songKey = `${score.title}_${chartType}_${difficulty}`
+      const chartType = score.chart_type?.toUpperCase();
+      const difficulty = score.difficulty?.toUpperCase();
+      const songKey = `${score.title}_${chartType}_${difficulty}`;
+
       try {
         await db.query(`
         INSERT INTO score {
@@ -134,25 +155,31 @@ app.post('/api/scores/sync', async (c) => {
         achievement = $input.achievement, fc = $input.fc,
         sync = $input.sync, updated_at = time::now()
         `, {
-          player: new RecordId('player', playerId.split(':')[1]),
+          player: new RecordId('player', playerKey),
                        song: new RecordId('song', songKey),
-                       difficulty, chart_type: chartType, level: score.level,
+                       difficulty,
+                       chart_type: chartType,
+                       level: score.level,
                        achievement: score.achievement,
                        fc: score.fc || undefined,
                        sync: score.sync || undefined,
-        })
-        success++
+        });
+        success++;
       } catch(e) {
-        console.error('sync error:', e)
-        failed++
+        console.error('sync error:', e);
+        failed++;
       }
     }
-    await db.query(`
-    UPDATE score SET chart_constant = song.chart_constant, version = song.version
-    WHERE player = $player AND chart_constant = NONE
-    `, { player: new RecordId('player', playerId.split(':')[1]) })
-    return c.json({ ok: true, success, failed })
-})
+  }
+
+  // 補齊遺漏的數值 (chart_constant, version)
+  await db.query(`
+  UPDATE score SET chart_constant = song.chart_constant, version = song.version
+  WHERE player = $player AND chart_constant = NONE
+  `, { player: new RecordId('player', playerKey) });
+
+  return c.json({ ok: true, success, failed });
+});
 
 app.get('/api/scores/all', async (c) => {
   const playerId = await getPlayerFromToken(c)

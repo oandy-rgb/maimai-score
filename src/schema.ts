@@ -15,6 +15,8 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS username ON player TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS created_at ON player TYPE datetime DEFAULT time::now();
     DEFINE INDEX IF NOT EXISTS player_username ON player FIELDS username UNIQUE;
+    DEFINE FIELD IF NOT EXISTS dan_img_url ON player TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS icon_img_url ON player TYPE option<string>;
 
 
     -- ==========================================
