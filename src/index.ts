@@ -85,13 +85,18 @@ app.post('/auth/google', async (c) => {
     const email = payload.email!
     const name = payload.name ?? email
 
+    // src/index.ts 的 app.post('/auth/google', ...) 區塊
     const existing = await db.query<any[]>(`SELECT * FROM player WHERE email = $email LIMIT 1`, { email })
     let playerId: string
+    let currentUsername: string // 新增變數
+
     if (existing[0]?.length > 0) {
       playerId = existing[0][0].id.toString()
+      currentUsername = existing[0][0].username // 從資料庫抓出改過的名字
     } else {
       const created = await db.query<any[]>(`CREATE player SET email = $email, username = $name`, { email, name })
       playerId = created[0][0].id.toString()
+      currentUsername = name
     }
 
     const token = await new SignJWT({ playerId, email })
@@ -99,7 +104,7 @@ app.post('/auth/google', async (c) => {
     .setExpirationTime('30d')
     .sign(JWT_SECRET)
 
-    return c.json({ token, email })
+    return c.json({ token, email, username: currentUsername })
   } catch (e) {
     return c.json({ error: 'Invalid token' }, 401)
   }
