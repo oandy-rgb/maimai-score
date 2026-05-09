@@ -17,6 +17,7 @@ export async function initSchema() {
     DEFINE INDEX IF NOT EXISTS player_username ON player FIELDS username UNIQUE;
     DEFINE FIELD IF NOT EXISTS dan_img_url ON player TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS icon_img_url ON player TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS in_game_name ON player TYPE option<string>;
 
 
     -- ==========================================
@@ -46,6 +47,8 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS notes_touch ON song TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS notes_break ON song TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS aliases ON song TYPE option<array<string>>;
+    DEFINE FIELD IF NOT EXISTS date_added ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS date_updated ON song TYPE option<string>;
 
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;

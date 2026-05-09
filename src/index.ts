@@ -125,10 +125,10 @@ app.post('/api/scores/sync', async (c) => {
   // 1. 同步更新玩家遊戲內的名稱、段位圖、頭像圖
   if (playerName) {
     await db.query(
-      'UPDATE player SET username = $username, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
+      'UPDATE player SET in_game_name = $name, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
       {
         id: new RecordId('player', playerKey),
-                   username: playerName,
+                   name: playerName,
                    dan: danImgUrl,
                    icon: iconImgUrl
       }
@@ -197,7 +197,7 @@ app.get('/b50', async (c) => {
     const playerKey = playerId.split(':')[1]
     // 🌟 新增：查詢玩家資訊
     const playerResult = await db.query(`
-    SELECT username, dan_img_url, icon_img_url FROM player WHERE id = $player
+    SELECT username, in_game_name, dan_img_url, icon_img_url FROM player WHERE id = $player
     `, { player: new RecordId('player', playerKey) })
     const pInfo = (playerResult[0] as any[])[0] || {}
 
@@ -226,6 +226,7 @@ app.get('/b50', async (c) => {
       newScores,
       oldScores,
       username: pInfo.username,
+      in_game_name: pInfo.in_game_name,
       dan_img_url: pInfo.dan_img_url,
       icon_img_url: pInfo.icon_img_url
     })
