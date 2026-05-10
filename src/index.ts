@@ -162,7 +162,7 @@ app.post('/api/scores/sync', async (c) => {
           : null
 
         try {
-          // 先更新 song.version（無論有沒有成績都更新）
+          // 先更新 song.version
           if (versionCode) {
             await db.query(
               `UPDATE $song SET version = $version`,
@@ -170,21 +170,18 @@ app.post('/api/scores/sync', async (c) => {
             )
           }
 
-          // 沒有成績就跳過 score 寫入
-          if (score.achievement === null || score.achievement === undefined) {
-            return
-          }
-
           await db.query(`
           INSERT INTO score {
             player: $player, song: $song, difficulty: $difficulty,
             chart_type: $chart_type, level: $level, achievement: $achievement,
             fc: $fc, sync: $sync,
-            dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars
+            dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars,
+            version: $version
           } ON DUPLICATE KEY UPDATE
           achievement = $input.achievement, fc = $input.fc,
           sync = $input.sync, updated_at = time::now(),
-          dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars
+          dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars,
+          version = $input.version
           `, {
             player:      new RecordId('player', playerKey),
             song:        new RecordId('song', songKey),
@@ -197,6 +194,7 @@ app.post('/api/scores/sync', async (c) => {
             dx_score:    score.dx_score  ?? undefined,
             dx_total:    score.dx_total  ?? undefined,
             dx_stars:    score.dx_stars  ?? undefined,
+            version:     versionCode ?? undefined,
           });
           success++;
         } catch(e) {
@@ -465,7 +463,13 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
 
   const versionMap = new Map<string, any>()
   for (const chart of allCharts) {
-    const ver = chart.version ?? '10000'
+    const score = scoreMap.get(chart.id?.toString() ?? '')
+    const achievement = score?.achievement ?? 0
+    const fcVal       = score?.fc   ?? null
+    const syncVal     = score?.sync ?? null
+    // 版本優先用書籤 sync 的（score.version），fallback 到 song.version
+    const ver = score?.version ?? chart.version ?? '10000'
+
     if (!versionMap.has(ver)) {
       versionMap.set(ver, {
         total: 0, sss: 0, fc: 0, ap: 0, fdx: 0,
@@ -473,12 +477,6 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
       })
     }
     const v = versionMap.get(ver)!
-    v.total++
-
-    const score = scoreMap.get(chart.id?.toString() ?? '')
-    const achievement = score?.achievement ?? 0
-    const fcVal       = score?.fc   ?? null
-    const syncVal     = score?.sync ?? null
 
     const isSss = achievement >= 100.0
     const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
@@ -524,7 +522,7 @@ app.get('/api/badge-progress', async (c) => {
     const playerKey = playerId.split(':')[1]
 
     const [scoresResult, songsResult] = await Promise.all([
-      db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
+      db.query(`SELECT song, achievement, fc, sync, version FROM score WHERE player = $player`,
                { player: new RecordId('player', playerKey) }),
       db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
     ])
