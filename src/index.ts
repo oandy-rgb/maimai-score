@@ -146,61 +146,59 @@ app.post('/api/scores/sync', async (c) => {
     );
   }
 
-  // 2. 處理分數同步
+  // 2. 處理分數同步（平行處理）
   let success = 0, failed = 0;
   if (Array.isArray(scores)) {
-    for (const score of scores) {
-      const chartType = score.chart_type?.toUpperCase();
-      const difficulty = score.difficulty?.toUpperCase();
-      const songKey = `${score.title}_${chartType}_${difficulty}`;
+    const PARALLEL = 10 // 每批平行處理筆數
+    for (let i = 0; i < scores.length; i += PARALLEL) {
+      const batch = scores.slice(i, i + PARALLEL)
+      await Promise.allSettled(batch.map(async (score) => {
+        const chartType = score.chart_type?.toUpperCase();
+        const difficulty = score.difficulty?.toUpperCase();
+        const songKey = `${score.title}_${chartType}_${difficulty}`;
 
-      // version_index → version code
-      const versionCode = score.version_index != null
-        ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
-        : null
+        const versionCode = score.version_index != null
+          ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
+          : null
 
-      try {
-        // 先更新 song.version（無論有沒有成績都更新）
-        if (versionCode) {
-          await db.query(
-            `UPDATE $song SET version = $version`,
-            { song: new RecordId('song', songKey), version: versionCode }
-          )
+        try {
+          // 先更新 song.version（無論有沒有成績都更新）
+          if (versionCode) {
+            await db.query(
+              `UPDATE $song SET version = $version`,
+              { song: new RecordId('song', songKey), version: versionCode }
+            )
+          }
+
+          await db.query(`
+          INSERT INTO score {
+            player: $player, song: $song, difficulty: $difficulty,
+            chart_type: $chart_type, level: $level, achievement: $achievement,
+            fc: $fc, sync: $sync,
+            dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars
+          } ON DUPLICATE KEY UPDATE
+          achievement = $input.achievement, fc = $input.fc,
+          sync = $input.sync, updated_at = time::now(),
+          dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars
+          `, {
+            player:      new RecordId('player', playerKey),
+            song:        new RecordId('song', songKey),
+            difficulty,
+            chart_type:  chartType,
+            level:       score.level,
+            achievement: score.achievement ?? null,
+            fc:          score.fc   || undefined,
+            sync:        score.sync || undefined,
+            dx_score:    score.dx_score  ?? undefined,
+            dx_total:    score.dx_total  ?? undefined,
+            dx_stars:    score.dx_stars  ?? undefined,
+          });
+          success++;
+        } catch(e) {
+          console.error('sync error:', score.title, score.chart_type, score.difficulty, e);
+          failed++;
         }
-
-        // 沒有成績就跳過 score 寫入
-        if (score.achievement === null || score.achievement === undefined) {
-          continue
-        }
-
-        await db.query(`
-        INSERT INTO score {
-          player: $player, song: $song, difficulty: $difficulty,
-          chart_type: $chart_type, level: $level, achievement: $achievement,
-          fc: $fc, sync: $sync,
-          dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars
-        } ON DUPLICATE KEY UPDATE
-        achievement = $input.achievement, fc = $input.fc,
-        sync = $input.sync, updated_at = time::now(),
-        dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars
-        `, {
-          player:     new RecordId('player', playerKey),
-          song:       new RecordId('song', songKey),
-          difficulty,
-          chart_type: chartType,
-          level:      score.level,
-          achievement: score.achievement,
-          fc:         score.fc   || undefined,
-          sync:       score.sync || undefined,
-          dx_score:   score.dx_score  ?? undefined,
-          dx_total:   score.dx_total  ?? undefined,
-          dx_stars:   score.dx_stars  ?? undefined,
-        });
-        success++;
-      } catch(e) {
-        console.error('sync error:', score.title, score.chart_type, score.difficulty, e);
-        failed++;
-      }
+      }))
     }
   }
 
@@ -260,6 +258,7 @@ app.get('/b50', async (c) => {
       newScores,
       oldScores,
       username: pInfo.username,
+      in_game_name: pInfo.in_game_name,
       dan_img_url: pInfo.dan_img_url,
       icon_img_url: pInfo.icon_img_url
     })
@@ -352,22 +351,29 @@ function buildSongMap(charts: any[]) {
 }
 
 app.get('/api/songs', async (c) => {
-  const now = Date.now()
-  if (_songsCache && now - _songsCacheAt < SONGS_CACHE_TTL) return c.json(_songsCache)
-    try {
-      const result = await db.query(`
-      SELECT title, artist, image_name, chart_type, difficulty, level,
-      chart_constant, chart_designer, aliases,
-      date_intl_added, date_intl_updated, date_added, date_updated,
-      notes_tap, notes_hold, notes_slide, notes_touch, notes_break
-      FROM song
-      `)
-      _songsCache = buildSongMap(result[0] as any[])
-      _songsCacheAt = now
-      return c.json(_songsCache)
-    } catch (error) {
-      return c.json({ error: '無法獲取歌曲資料' }, 500)
-    }
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+  const playerKey = playerId.split(':')[1]
+  try {
+    const result = await db.query(`
+      SELECT
+        song.title AS title, song.artist AS artist, song.image_name AS image_name,
+        song.chart_type AS chart_type, song.difficulty AS difficulty, song.level AS level,
+        song.chart_constant AS chart_constant, song.chart_designer AS chart_designer,
+        song.aliases AS aliases,
+        song.date_intl_added AS date_intl_added, song.date_intl_updated AS date_intl_updated,
+        song.date_added AS date_added, song.date_updated AS date_updated,
+        song.notes_tap AS notes_tap, song.notes_hold AS notes_hold,
+        song.notes_slide AS notes_slide, song.notes_touch AS notes_touch,
+        song.notes_break AS notes_break
+      FROM score WHERE player = $player
+      FETCH song
+    `, { player: new RecordId('player', playerKey) })
+    const songs = buildSongMap(result[0] as any[])
+    return c.json(songs)
+  } catch (error) {
+    return c.json({ error: '無法獲取歌曲資料' }, 500)
+  }
 })
 
 
@@ -459,12 +465,12 @@ const VERSION_BADGE_NAME: Record<string, string> = {
 const BADGE_DIFFS = ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER'] as const
 
 function buildBadgeProgress(allCharts: any[], scores: any[]) {
+  // scores 裡的資料已經跟 chart 合併，直接用 chart 的 achievement/fc/sync
   const scoreMap = new Map<string, any>()
-  for (const s of scores) scoreMap.set(s.song.toString(), s)
+  for (const s of scores) scoreMap.set(s.song?.toString() ?? '', s)
 
   const versionMap = new Map<string, any>()
   for (const chart of allCharts) {
-    // version 欄位已在 import-cc 時用 date_intl_added 反推，直接使用
     const ver = chart.version ?? '10000'
     if (!versionMap.has(ver)) {
       versionMap.set(ver, {
@@ -475,10 +481,10 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
     const v = versionMap.get(ver)!
     v.total++
 
-    const score = scoreMap.get(chart.id.toString())
-    const achievement = score?.achievement ?? 0
-    const fcVal  = score?.fc   ?? null
-    const syncVal = score?.sync ?? null
+    // chart 已包含 achievement/fc/sync（從 score row 來）
+    const achievement = chart.achievement ?? 0
+    const fcVal       = chart.fc   ?? null
+    const syncVal     = chart.sync ?? null
 
     const isSss = achievement >= 100.0
     const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
@@ -523,13 +529,38 @@ app.get('/api/badge-progress', async (c) => {
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const playerKey = playerId.split(':')[1]
 
-    const [scoresResult, songsResult] = await Promise.all([
-      db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
-               { player: new RecordId('player', playerKey) }),
-      db.query(`SELECT id, title, chart_type, difficulty, version, image_name, date_intl_added, date_intl_updated FROM song WHERE difficulty != 'REMASTER'`),
-    ])
+    // song 列表從 score 來，只包含書籤 sync 過的歌
+    const result = await db.query(`
+      SELECT
+        song.id AS id, song.title AS title, song.chart_type AS chart_type,
+        song.difficulty AS difficulty, song.version AS version,
+        song.image_name AS image_name,
+        achievement, fc, sync
+      FROM score
+      WHERE player = $player AND song.difficulty != 'REMASTER'
+      FETCH song
+    `, { player: new RecordId('player', playerKey) })
 
-    return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
+    const rows = result[0] as any[]
+
+    // 把每筆 score row 當成 chart + score 合併處理
+    const charts = rows.map(r => ({
+      id:         r.id,
+      title:      r.title,
+      chart_type: r.chart_type,
+      difficulty: r.difficulty,
+      version:    r.version,
+      image_name: r.image_name,
+    }))
+    const scores = rows.map(r => ({
+      song:        r.id,
+      achievement: r.achievement,
+      fc:          r.fc,
+      sync:        r.sync,
+    }))
+
+    return c.json(buildBadgeProgress(charts, scores))
+})
 })
 
 // ==========================================

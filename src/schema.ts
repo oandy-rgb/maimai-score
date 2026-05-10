@@ -78,7 +78,7 @@ export async function initSchema() {
     ASSERT $value IN ['STANDARD', 'DX'];
 
     DEFINE FIELD IF NOT EXISTS level ON score TYPE string;
-    DEFINE FIELD IF NOT EXISTS achievement ON score TYPE number;
+    DEFINE FIELD IF NOT EXISTS achievement ON score TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS chart_constant ON score TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS version ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS fc ON score TYPE option<string>;
