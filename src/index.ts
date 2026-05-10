@@ -33,8 +33,8 @@ const VERSION_LIST: Record<string, string> = {
   "16000": "PiNK",         "17000": "PiNK PLUS",
   "18000": "MURASAKi",     "18500": "MURASAKi PLUS",
   "19000": "MiLK",         "19500": "MiLK PLUS",
-  "19900": "FiNALE",       "20000": "でらっくす",
-  "20500": "でらっくす PLUS", "21000": "Splash",
+  "19900": "FiNALE",       "20000": "DX",
+  "20500": "DX PLUS", "21000": "Splash",
   "21500": "Splash PLUS",  "22000": "UNiVERSE",
   "22500": "UNiVERSE PLUS","23000": "FESTiVAL",
   "23500": "FESTiVAL PLUS","24000": "BUDDiES",
@@ -114,6 +114,17 @@ app.post('/auth/google', async (c) => {
 // 成績
 // ==========================================
 
+// version index（官網 ?version=N）對應到 VERSION_LIST 的 key
+const VERSION_INDEX_TO_CODE: Record<number, string> = {
+  0:  '10000', 1:  '11000', 2:  '12000', 3:  '13000',
+  4:  '14000', 5:  '15000', 6:  '16000', 7:  '17000',
+  8:  '18000', 9:  '18500', 10: '19000', 11: '19500',
+  12: '19900', 13: '20000', 14: '20500', 15: '21000',
+  16: '21500', 17: '22000', 18: '22500', 19: '23000',
+  20: '23500', 21: '24000', 22: '24500', 23: '25000',
+  24: '25500', 25: '26000',
+}
+
 app.post('/api/scores/sync', async (c) => {
   const playerId = await getPlayerFromToken(c);
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
@@ -128,14 +139,14 @@ app.post('/api/scores/sync', async (c) => {
       'UPDATE player SET in_game_name = $name, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
       {
         id: new RecordId('player', playerKey),
-                   username: playerName,
-                   dan: danImgUrl,
-                   icon: iconImgUrl
+        name: playerName,
+        dan: danImgUrl,
+        icon: iconImgUrl
       }
     );
   }
 
-  // 2. 處理分數同步 (移除原本重複的 const scores = await c.req.json())
+  // 2. 處理分數同步
   let success = 0, failed = 0;
   if (Array.isArray(scores)) {
     for (const score of scores) {
@@ -143,25 +154,44 @@ app.post('/api/scores/sync', async (c) => {
       const difficulty = score.difficulty?.toUpperCase();
       const songKey = `${score.title}_${chartType}_${difficulty}`;
 
+      // version_index → version code
+      const versionCode = score.version_index != null
+        ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
+        : null
+
       try {
         await db.query(`
         INSERT INTO score {
           player: $player, song: $song, difficulty: $difficulty,
           chart_type: $chart_type, level: $level, achievement: $achievement,
-          fc: $fc, sync: $sync
+          fc: $fc, sync: $sync,
+          dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars
         } ON DUPLICATE KEY UPDATE
         achievement = $input.achievement, fc = $input.fc,
-        sync = $input.sync, updated_at = time::now()
+        sync = $input.sync, updated_at = time::now(),
+        dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars
         `, {
-          player: new RecordId('player', playerKey),
-                       song: new RecordId('song', songKey),
-                       difficulty,
-                       chart_type: chartType,
-                       level: score.level,
-                       achievement: score.achievement,
-                       fc: score.fc || undefined,
-                       sync: score.sync || undefined,
+          player:    new RecordId('player', playerKey),
+          song:      new RecordId('song', songKey),
+          difficulty,
+          chart_type: chartType,
+          level:      score.level,
+          achievement: score.achievement,
+          fc:         score.fc   || undefined,
+          sync:       score.sync || undefined,
+          dx_score:   score.dx_score  ?? undefined,
+          dx_total:   score.dx_total  ?? undefined,
+          dx_stars:   score.dx_stars  ?? undefined,
         });
+
+        // 同步更新 song.version（用官網抓到的版本覆蓋）
+        if (versionCode) {
+          await db.query(
+            `UPDATE $song SET version = $version`,
+            { song: new RecordId('song', songKey), version: versionCode }
+          )
+        }
+
         success++;
       } catch(e) {
         console.error('sync error:', e);
@@ -408,18 +438,18 @@ app.delete('/api/todo/:id', async (c) => {
 
 const VERSION_BADGE_NAME: Record<string, string> = {
   '10000': '真',  '11000': '真',
-  '12000': '超将', '13000': '檄将',
-  '14000': '橙将', '15000': '暁将',
-  '16000': '桃将', '17000': '櫻将',
-  '18000': '紫将', '18500': '菫将',
-  '19000': '白将', '19500': '雪将',
-  '19900': '輝将', '20000': '熊将',
-  '20500': '華将', '21000': '爽将',
-  '21500': '煌将', '22000': '宙将',
-  '22500': '星将', '23000': '祭将',
-  '23500': '祝将', '24000': '双将',
-  '24500': '宴将', '25000': '鏡将',
-  '25500': '彩将', '26000': '丸将',
+  '12000': '超', '13000': '檄',
+  '14000': '橙', '15000': '暁',
+  '16000': '桃', '17000': '櫻',
+  '18000': '紫', '18500': '菫',
+  '19000': '白', '19500': '雪',
+  '19900': '輝', '20000': '熊',
+  '20500': '華', '21000': '爽',
+  '21500': '煌', '22000': '宙',
+  '22500': '星', '23000': '祭',
+  '23500': '祝', '24000': '双',
+  '24500': '宴', '25000': '鏡',
+  '25500': '彩', '26000': '丸',
 }
 
 const BADGE_DIFFS = ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER'] as const

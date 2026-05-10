@@ -83,6 +83,9 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS version ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS fc ON score TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS sync ON score TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS dx_score ON score TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS dx_total ON score TYPE option<number>;
+    DEFINE FIELD IF NOT EXISTS dx_stars ON score TYPE option<number>;
     DEFINE FIELD IF NOT EXISTS updated_at ON score TYPE datetime DEFAULT time::now();
 
     DEFINE INDEX IF NOT EXISTS score_player ON score FIELDS player;
