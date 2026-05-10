@@ -162,12 +162,47 @@ app.post('/api/scores/sync', async (c) => {
           : null
 
         try {
-          // 先更新 song.version
+          // 更新 song.version
           if (versionCode) {
             await db.query(
               `UPDATE $song SET version = $version`,
               { song: new RecordId('song', songKey), version: versionCode }
             )
+          }
+
+          // 沒有成績的 MASTER：只寫 version 到 score，不覆蓋成績
+          if (score.achievement === null || score.achievement === undefined) {
+            await db.query(`
+            INSERT INTO score {
+              player: $player, song: $song, difficulty: $difficulty,
+              chart_type: $chart_type, level: $level, version: $version
+            } ON DUPLICATE KEY UPDATE
+            version = $input.version
+            `, {
+              player:     new RecordId('player', playerKey),
+              song:       new RecordId('song', songKey),
+              difficulty,
+              chart_type: chartType,
+              level:      score.level ?? '',
+              version:    versionCode ?? undefined,
+            })
+
+            // MASTER 的 version 傳播到 BASIC/ADVANCED/EXPERT
+            if (difficulty === 'MASTER' && versionCode) {
+              for (const otherDiff of ['BASIC', 'ADVANCED', 'EXPERT']) {
+                const otherSongKey = `${score.title}_${chartType}_${otherDiff}`
+                await db.query(
+                  `UPDATE score SET version = $version WHERE song = $song AND player = $player`,
+                  {
+                    version: versionCode,
+                    song: new RecordId('song', otherSongKey),
+                    player: new RecordId('player', playerKey),
+                  }
+                )
+              }
+            }
+            success++
+            return
           }
 
           await db.query(`
@@ -187,8 +222,8 @@ app.post('/api/scores/sync', async (c) => {
             song:        new RecordId('song', songKey),
             difficulty,
             chart_type:  chartType,
-            level:       score.level,
-            achievement: score.achievement ?? null,
+            level:       score.level ?? '',
+            achievement: score.achievement,
             fc:          score.fc   || undefined,
             sync:        score.sync || undefined,
             dx_score:    score.dx_score  ?? undefined,
