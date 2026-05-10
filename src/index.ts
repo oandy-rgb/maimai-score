@@ -561,7 +561,6 @@ app.get('/api/badge-progress', async (c) => {
 
     return c.json(buildBadgeProgress(charts, scores))
 })
-})
 
 // ==========================================
 // 🎯 推薦系統
