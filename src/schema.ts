@@ -49,6 +49,8 @@ export async function initSchema() {
     DEFINE FIELD IF NOT EXISTS aliases ON song TYPE option<array<string>>;
     DEFINE FIELD IF NOT EXISTS date_added ON song TYPE option<string>;
     DEFINE FIELD IF NOT EXISTS date_updated ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS date_intl_added ON song TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS date_intl_updated ON song TYPE option<string>;
 
     DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
     DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;

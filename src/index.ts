@@ -128,7 +128,7 @@ app.post('/api/scores/sync', async (c) => {
       'UPDATE player SET in_game_name = $name, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
       {
         id: new RecordId('player', playerKey),
-                   name: playerName,
+                   username: playerName,
                    dan: danImgUrl,
                    icon: iconImgUrl
       }
@@ -226,7 +226,6 @@ app.get('/b50', async (c) => {
       newScores,
       oldScores,
       username: pInfo.username,
-      in_game_name: pInfo.in_game_name,
       dan_img_url: pInfo.dan_img_url,
       icon_img_url: pInfo.icon_img_url
     })
@@ -287,10 +286,23 @@ function buildSongMap(charts: any[]) {
         image_name: chart.image_name,
         chart_type: chart.chart_type,
         aliases: chart.aliases ?? [],
+        date_intl_added:   chart.date_intl_added   ?? null,
+        date_intl_updated: chart.date_intl_updated  ?? null,
+        date_added:        chart.date_added         ?? null,
+        date_updated:      chart.date_updated       ?? null,
         difficulties: []
       })
     }
-    songMap.get(key).difficulties.push({
+    const entry = songMap.get(key)
+    // 取最早的 date_intl_added
+    if (chart.date_intl_added && (!entry.date_intl_added || chart.date_intl_added < entry.date_intl_added)) {
+      entry.date_intl_added = chart.date_intl_added
+    }
+    // 取最晚的 date_intl_updated
+    if (chart.date_intl_updated && (!entry.date_intl_updated || chart.date_intl_updated > entry.date_intl_updated)) {
+      entry.date_intl_updated = chart.date_intl_updated
+    }
+    entry.difficulties.push({
       difficulty: chart.difficulty,
       level: chart.level,
       chart_constant: chart.chart_constant,
@@ -312,6 +324,7 @@ app.get('/api/songs', async (c) => {
       const result = await db.query(`
       SELECT title, artist, image_name, chart_type, difficulty, level,
       chart_constant, chart_designer, aliases,
+      date_intl_added, date_intl_updated, date_added, date_updated,
       notes_tap, notes_hold, notes_slide, notes_touch, notes_break
       FROM song
       `)
@@ -393,12 +406,20 @@ app.delete('/api/todo/:id', async (c) => {
 // 🏆 牌子統計
 // ==========================================
 
-// 把細分版本號對應到最近的大版本
-function getMainVersion(ver: string): string {
-  const n = parseInt(ver) || 0
-  const keys = Object.keys(VERSION_LIST).map(Number).sort((a, b) => b - a)
-  const found = keys.find(k => k <= n)
-  return found?.toString() ?? ver
+const VERSION_BADGE_NAME: Record<string, string> = {
+  '10000': '真',  '11000': '真',
+  '12000': '超将', '13000': '檄将',
+  '14000': '橙将', '15000': '暁将',
+  '16000': '桃将', '17000': '櫻将',
+  '18000': '紫将', '18500': '菫将',
+  '19000': '白将', '19500': '雪将',
+  '19900': '輝将', '20000': '熊将',
+  '20500': '華将', '21000': '爽将',
+  '21500': '煌将', '22000': '宙将',
+  '22500': '星将', '23000': '祭将',
+  '23500': '祝将', '24000': '双将',
+  '24500': '宴将', '25000': '鏡将',
+  '25500': '彩将', '26000': '丸将',
 }
 
 const BADGE_DIFFS = ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER'] as const
@@ -407,55 +428,58 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
   const scoreMap = new Map<string, any>()
   for (const s of scores) scoreMap.set(s.song.toString(), s)
 
-    const versionMap = new Map<string, any>()
-    for (const chart of allCharts) {
-      const ver = getMainVersion(chart.version ?? '0')
-      if (!versionMap.has(ver)) {
-        versionMap.set(ver, {
-          total: 0, sss: 0, fc: 0, ap: 0, app: 0,
-          difficulties: { BASIC: [], ADVANCED: [], EXPERT: [], MASTER: [] },
-        })
-      }
-      const v = versionMap.get(ver)!
-      v.total++
-
-      const score = scoreMap.get(chart.id.toString())
-      const achievement = score?.achievement ?? 0
-      const fcVal = score?.fc ?? null
-      const syncVal = score?.sync ?? null
-
-      const isSss = achievement >= 100.0
-      const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
-      const isAp  = ['ap', 'app'].includes(fcVal)
-      const isApp = syncVal === 'fdx' || syncVal === 'fdxp'
-
-      if (isSss) v.sss++
-        if (isFc)  v.fc++
-          if (isAp)  v.ap++
-            if (isApp) v.app++
-
-              const diff = chart.difficulty as string
-              if (BADGE_DIFFS.includes(diff as any)) {
-                v.difficulties[diff].push({
-                  title: chart.title,
-                  chart_type: chart.chart_type,
-                  image_name: chart.image_name,
-                  achievement,
-                  fc: fcVal,
-                  sync: syncVal,
-                  sss: isSss,
-                  fc_badge: isFc,
-                  ap: isAp,
-                  app: isApp,
-                })
-              }
+  const versionMap = new Map<string, any>()
+  for (const chart of allCharts) {
+    // version 欄位已在 import-cc 時用 date_intl_added 反推，直接使用
+    const ver = chart.version ?? '10000'
+    if (!versionMap.has(ver)) {
+      versionMap.set(ver, {
+        total: 0, sss: 0, fc: 0, ap: 0, fdx: 0,
+        difficulties: { BASIC: [], ADVANCED: [], EXPERT: [], MASTER: [] },
+      })
     }
+    const v = versionMap.get(ver)!
+    v.total++
 
-    return Array.from(versionMap.entries())
+    const score = scoreMap.get(chart.id.toString())
+    const achievement = score?.achievement ?? 0
+    const fcVal  = score?.fc   ?? null
+    const syncVal = score?.sync ?? null
+
+    const isSss = achievement >= 100.0
+    const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
+    const isAp  = ['ap', 'app'].includes(fcVal)
+    const isFdx = syncVal === 'fdx' || syncVal === 'fdxp'
+
+    if (isSss) v.sss++
+    if (isFc)  v.fc++
+    if (isAp)  v.ap++
+    if (isFdx) v.fdx++
+
+    const diff = chart.difficulty as string
+    if (BADGE_DIFFS.includes(diff as any)) {
+      v.difficulties[diff].push({
+        title:      chart.title,
+        chart_type: chart.chart_type,
+        image_name: chart.image_name,
+        achievement,
+        fc:       fcVal,
+        sync:     syncVal,
+        sss:      isSss,
+        fc_badge: isFc,
+        ap:       isAp,
+        fdx:      isFdx,
+      })
+    }
+  }
+
+  return Array.from(versionMap.entries())
     .sort(([a], [b]) => parseInt(a) - parseInt(b))
     .map(([version, data]) => ({
       version,
       version_name: VERSION_LIST[version] ?? version,
+      badge_name:   VERSION_BADGE_NAME[version] ?? '',
+      has_sho:      parseInt(version) >= 12000,
       ...data,
     }))
 }
@@ -468,7 +492,7 @@ app.get('/api/badge-progress', async (c) => {
     const [scoresResult, songsResult] = await Promise.all([
       db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
                { player: new RecordId('player', playerKey) }),
-                                                          db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+      db.query(`SELECT id, title, chart_type, difficulty, version, image_name, date_intl_added, date_intl_updated FROM song WHERE difficulty != 'REMASTER'`),
     ])
 
     return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))

@@ -1,46 +1,108 @@
 import { connectDB, db } from './db'
 import { initSchema } from './schema'
 import { RecordId } from 'surrealdb'
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
 
 const INTL_DB_URL = 'https://raw.githubusercontent.com/zvuc/otoge-db/refs/heads/master/maimai/data/music-ex-intl.json'
 
 const DIFFS = [
-  { key: 'bas', name: 'BASIC' },
-{ key: 'adv', name: 'ADVANCED' },
-{ key: 'exp', name: 'EXPERT' },
-{ key: 'mas', name: 'MASTER' },
-{ key: 'remas', name: 'REMASTER' },
+  { key: 'bas',   name: 'BASIC'    },
+  { key: 'adv',   name: 'ADVANCED' },
+  { key: 'exp',   name: 'EXPERT'   },
+  { key: 'mas',   name: 'MASTER'   },
+  { key: 'remas', name: 'REMASTER' },
 ]
 
-// 🌟 新增：具備防錯與自動重試機制的批次執行器
-// 🌟 新增：強制超時工具，解決 SDK 斷線無限期等待的 Bug
-const withTimeout = <T>(promise: Promise<T>, ms: number) => {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('請求超時')), ms);
-  });
-  return Promise.race([
-    promise.finally(() => clearTimeout(timeoutId)),
-                      timeoutPromise
-  ]);
-};
-
-async function executeBatchWithRetry(tasks: (() => Promise<void>)[]) {
-  let retries = 5; // 放寬重試次數到 5 次
-  while (retries > 0) {
-    try {
-      // 🌟 將批次請求包上 10 秒超時限制
-      await withTimeout(Promise.all(tasks.map(t => t())), 10000);
-      return; // 成功就跳出
-    } catch (e) {
-      retries--;
-      console.log(`\n⚠️ 寫入超時或斷線，等待 3 秒後重試... (剩餘: ${retries})`);
-      await new Promise(r => setTimeout(r, 3000)); // 等待 db.ts 的背景重連
-    }
+// ==========================================
+// overrides.json（手動覆蓋錯誤版本/日期）
+// 格式：{ "{title}_{chart_type}": { "date_intl_added": "YYYYMMDD", "date_intl_updated": "YYYYMMDD" } }
+// ==========================================
+const OVERRIDES_PATH = join(__dirname, 'overrides.json')
+let overrides: Record<string, { date_intl_added?: string; date_intl_updated?: string }> = {}
+if (existsSync(OVERRIDES_PATH)) {
+  try {
+    overrides = JSON.parse(readFileSync(OVERRIDES_PATH, 'utf-8'))
+    console.log(`✅ 載入 overrides.json，共 ${Object.keys(overrides).length} 條覆蓋規則`)
+  } catch (e) {
+    console.warn('⚠️ overrides.json 解析失敗，忽略覆蓋規則')
   }
-  throw new Error("批次寫入徹底失敗，請檢查網路狀態");
 }
 
+// ==========================================
+// 版本日期對照表（國際服上線日期，由新到舊）
+// ==========================================
+const VERSION_DATE_RANGES: { version: string; from: string }[] = [
+  { version: '26500', from: '20260701' }, // CiRCLE PLUS（預估）
+  { version: '26000', from: '20260122' }, // CiRCLE
+  { version: '25500', from: '20250724' }, // PRiSM PLUS
+  { version: '25000', from: '20250116' }, // PRiSM
+  { version: '24500', from: '20240725' }, // BUDDiES PLUS
+  { version: '24000', from: '20240118' }, // BUDDiES
+  { version: '23500', from: '20230727' }, // FESTiVAL PLUS
+  { version: '23000', from: '20230119' }, // FESTiVAL
+  { version: '22500', from: '20220728' }, // UNiVERSE PLUS
+  { version: '22000', from: '20220127' }, // UNiVERSE
+  { version: '21500', from: '20210730' }, // Splash PLUS
+  { version: '21000', from: '20210129' }, // Splash
+  { version: '20500', from: '20200729' }, // でらっくす PLUS
+  { version: '20000', from: '20191125' }, // でらっくす（國際服開站）
+  { version: '19900', from: '20181213' }, // FiNALE
+  { version: '19500', from: '20180621' }, // MiLK PLUS
+  { version: '19000', from: '20171214' }, // MiLK
+  { version: '18500', from: '20170622' }, // MURASAKi PLUS
+  { version: '18000', from: '20161215' }, // MURASAKi
+  { version: '17000', from: '20160730' }, // PiNK PLUS
+  { version: '16000', from: '20151209' }, // PiNK
+  { version: '15000', from: '20150319' }, // ORANGE PLUS
+  { version: '14000', from: '20140918' }, // ORANGE
+  { version: '13000', from: '20140226' }, // GreeN PLUS
+  { version: '12000', from: '20130313' }, // GreeN
+  { version: '11000', from: '20121213' }, // maimai PLUS
+  { version: '10000', from: '20120711' }, // maimai
+]
+
+function getVersionFromDate(dateStr: string | undefined): string {
+  if (!dateStr) return '10000'
+  const d = dateStr.replace(/-/g, '') // 支援 YYYYMMDD 和 YYYY-MM-DD
+  for (const { version, from } of VERSION_DATE_RANGES) {
+    if (d >= from) return version
+  }
+  return '10000'
+}
+
+// ==========================================
+// 超時與重試
+// ==========================================
+const withTimeout = <T>(promise: Promise<T>, ms: number) => {
+  let timeoutId: NodeJS.Timeout
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('請求超時')), ms)
+  })
+  return Promise.race([
+    promise.finally(() => clearTimeout(timeoutId)),
+    timeoutPromise,
+  ])
+}
+
+async function executeBatchWithRetry(tasks: (() => Promise<void>)[]) {
+  let retries = 5
+  while (retries > 0) {
+    try {
+      await withTimeout(Promise.all(tasks.map(t => t())), 10000)
+      return
+    } catch (e) {
+      retries--
+      console.log(`\n⚠️ 寫入超時或斷線，等待 3 秒後重試... (剩餘: ${retries})`)
+      await new Promise(r => setTimeout(r, 3000))
+    }
+  }
+  throw new Error('批次寫入徹底失敗，請檢查網路狀態')
+}
+
+// ==========================================
+// 主程式
+// ==========================================
 async function importCC() {
   await connectDB()
 
@@ -51,53 +113,104 @@ async function importCC() {
   await db.query(`DELETE song`)
 
   console.log(`🔥 正在下載國際服資料...`)
-  const res = await fetch(INTL_DB_URL, { cache: "no-store" })
+  const res = await fetch(INTL_DB_URL, { cache: 'no-store' })
   const songs = await res.json() as any[]
 
   console.log(`📊 共偵測到: ${songs.length} 首歌曲資料`)
 
   let songUpdated = 0
-  const BATCH_SIZE = 20 // 降低併發量，保護 port-forward
+  const BATCH_SIZE = 20
   let tasks: (() => Promise<void>)[] = []
 
   for (const song of songs) {
-    const common = {
-      title: song.title,
-      artist: song.artist || '',
-      genre: song.catcode || '',
-      bpm: parseInt(song.bpm) || 0,
-      version: song.version || '',
-      image_name: song.image_url || '00000.png',
-      date_added: song.date_intl_added || undefined,
-      date_updated: song.date_intl_updated || undefined
-    }
+    // 判斷是否同時有 STANDARD 和 DX 譜
+    const hasStd = DIFFS.some(d => song[`lev_${d.key}_i`])
+    const hasDx  = DIFFS.some(d => song[`dx_lev_${d.key}_i`])
+    const hasBoth = hasStd && hasDx
+
+    const versionNum = parseInt(song.version) || 0
+    const isDxEra = versionNum >= 20000
 
     const tracks = [
-      { prefix: '', type: 'STANDARD' },
-      { prefix: 'dx_', type: 'DX' }
+      { prefix: '',    type: 'STANDARD' },
+      { prefix: 'dx_', type: 'DX'       },
     ]
 
     for (const track of tracks) {
+      // 套用 overrides.json
+      const overrideKey = `${song.title}_${track.type}`
+      const override = overrides[overrideKey] ?? {}
+
+      // 計算此 chart_type 的 date_intl_added / date_intl_updated
+      let dateIntlAdded: string
+      let dateIntlUpdated: string
+
+      if (hasBoth) {
+        if (isDxEra) {
+          // DX 時代：DX 是原生（date_intl_added），STD 是後追加（date_intl_updated）
+          if (track.type === 'DX') {
+            dateIntlAdded   = song.date_intl_added   || ''
+            dateIntlUpdated = song.date_intl_updated  || ''
+          } else {
+            dateIntlAdded   = song.date_intl_updated  || ''  // STD 後追加
+            dateIntlUpdated = song.date_intl_updated  || ''
+          }
+        } else {
+          // 舊時代：STD 是原生（date_intl_added），DX 是後追加（date_intl_updated）
+          if (track.type === 'STANDARD') {
+            dateIntlAdded   = song.date_intl_added   || ''
+            dateIntlUpdated = song.date_intl_updated  || ''
+          } else {
+            dateIntlAdded   = song.date_intl_updated  || ''  // DX 後追加
+            dateIntlUpdated = song.date_intl_updated  || ''
+          }
+        }
+      } else {
+        dateIntlAdded   = song.date_intl_added  || ''
+        dateIntlUpdated = song.date_intl_updated || ''
+      }
+
+      // overrides 優先
+      if (override.date_intl_added)   dateIntlAdded   = override.date_intl_added
+      if (override.date_intl_updated) dateIntlUpdated = override.date_intl_updated
+
+      // 用 date_intl_added 反推版本（給牌子系統用）
+      const dateVersion = getVersionFromDate(dateIntlAdded)
+
+      const common = {
+        title:        song.title,
+        artist:       song.artist      || '',
+        genre:        song.catcode     || '',
+        bpm:          parseInt(song.bpm) || 0,
+        version:      dateVersion,           // 用日期反推的版本
+        image_name:   song.image_url   || '00000.png',
+        // 國際版日期
+        date_intl_added:   dateIntlAdded,
+        date_intl_updated: dateIntlUpdated,
+        // 日版日期（原始欄位）
+        date_added:   song.date_added   || undefined,
+        date_updated: song.date_updated || undefined,
+      }
+
       for (const diff of DIFFS) {
         const ccKey = `${track.prefix}lev_${diff.key}_i`
         if (!song[ccKey]) continue
 
-          const finalCC = parseFloat(song[ccKey])
-          const songKey = `${common.title}_${track.type}_${diff.name}`
-          const levelString = song[`${track.prefix}lev_${diff.key}`] || ''
-          const designer = song[`${track.prefix}lev_${diff.key}_designer`] || ''
+        const finalCC    = parseFloat(song[ccKey])
+        const songKey    = `${common.title}_${track.type}_${diff.name}`
+        const levelString = song[`${track.prefix}lev_${diff.key}`] || ''
+        const designer    = song[`${track.prefix}lev_${diff.key}_designer`] || ''
 
-          const notes = {
-            tap: parseInt(song[`${track.prefix}lev_${diff.key}_notes_tap`]) || 0,
-            hold: parseInt(song[`${track.prefix}lev_${diff.key}_notes_hold`]) || 0,
-            slide: parseInt(song[`${track.prefix}lev_${diff.key}_notes_slide`]) || 0,
-            touch: track.type === 'DX' ? (parseInt(song[`dx_lev_${diff.key}_notes_touch`]) || 0) : 0,
-            break: parseInt(song[`${track.prefix}lev_${diff.key}_notes_break`]) || 0,
-          }
+        const notes = {
+          tap:   parseInt(song[`${track.prefix}lev_${diff.key}_notes_tap`])   || 0,
+          hold:  parseInt(song[`${track.prefix}lev_${diff.key}_notes_hold`])  || 0,
+          slide: parseInt(song[`${track.prefix}lev_${diff.key}_notes_slide`]) || 0,
+          touch: track.type === 'DX' ? (parseInt(song[`dx_lev_${diff.key}_notes_touch`]) || 0) : 0,
+          break: parseInt(song[`${track.prefix}lev_${diff.key}_notes_break`]) || 0,
+        }
 
-          // 🌟 關鍵修正：包裝成非同步函數，不要立刻執行
-          tasks.push(async () => {
-            await db.query(`
+        tasks.push(async () => {
+          await db.query(`
             UPSERT $id SET
             title = $title, artist = $artist, genre = $genre, bpm = $bpm,
             version = $version, chart_constant = $cc, image_name = $image_name,
@@ -105,39 +218,37 @@ async function importCC() {
             chart_designer = $designer,
             notes_tap = $tap, notes_hold = $hold, notes_slide = $slide,
             notes_touch = $touch, notes_break = $break,
+            date_intl_added = $date_intl_added, date_intl_updated = $date_intl_updated,
             date_added = $date_added, date_updated = $date_updated
-            `, {
-              id: new RecordId('song', songKey),
-                           ...common,
-                           cc: finalCC,
-                           type: track.type,
-                           diff: diff.name,
-                           level: levelString,
-                           designer: designer,
-                           ...notes
-            })
-
-            songUpdated++
-
-            await db.query(`UPDATE score SET chart_constant = $cc, version = $version WHERE song = $song`, {
-              cc: finalCC, version: common.version, song: new RecordId('song', songKey)
-            })
+          `, {
+            id: new RecordId('song', songKey),
+            ...common,
+            cc:       finalCC,
+            type:     track.type,
+            diff:     diff.name,
+            level:    levelString,
+            designer: designer,
+            ...notes,
           })
 
-          // 當任務池滿了，執行並清空
-          if (tasks.length >= BATCH_SIZE) {
-            await executeBatchWithRetry(tasks)
-            tasks = []
+          songUpdated++
 
-            // 🌟 讓 port-forward 隧道休息 0.2 秒
-            await new Promise(r => setTimeout(r, 200))
-            process.stdout.write(`\r🚀 進度: ${songUpdated} 筆譜面...`)
-          }
+          await db.query(
+            `UPDATE score SET chart_constant = $cc, version = $version WHERE song = $song`,
+            { cc: finalCC, version: common.version, song: new RecordId('song', songKey) }
+          )
+        })
+
+        if (tasks.length >= BATCH_SIZE) {
+          await executeBatchWithRetry(tasks)
+          tasks = []
+          await new Promise(r => setTimeout(r, 200))
+          process.stdout.write(`\r🚀 進度: ${songUpdated} 筆譜面...`)
+        }
       }
     }
   }
 
-  // 執行剩下的任務
   if (tasks.length > 0) {
     await executeBatchWithRetry(tasks)
   }
@@ -147,6 +258,6 @@ async function importCC() {
 }
 
 importCC().catch(err => {
-  console.error("\n❌ 導入失敗:", err)
+  console.error('\n❌ 導入失敗:', err)
   process.exit(1)
 })

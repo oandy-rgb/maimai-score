@@ -1,0 +1,11 @@
+{
+  "_comment": "key 格式：{title}_{chart_type}，chart_type 為 STANDARD 或 DX",
+  "_example": {
+    "One Step Ahead_STANDARD": {
+      "date_intl_added": "20140918"
+    },
+    "One Step Ahead_DX": {
+      "date_intl_added": "20250116"
+    }
+  }
+}
