@@ -478,6 +478,8 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
     }
     const v = versionMap.get(ver)!
     v.total++
+
+    const isSss = achievement >= 100.0
     const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
     const isAp  = ['ap', 'app'].includes(fcVal)
     const isFdx = syncVal === 'fdx' || syncVal === 'fdxp'
