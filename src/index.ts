@@ -162,12 +162,23 @@ app.post('/api/scores/sync', async (c) => {
           : null
 
         try {
-          // 更新 song.version
-          if (versionCode) {
+          // 只有 MASTER 和 REMASTER 才更新 song.version
+          if (versionCode && (difficulty === 'MASTER' || difficulty === 'REMASTER')) {
             await db.query(
               `UPDATE $song SET version = $version`,
               { song: new RecordId('song', songKey), version: versionCode }
             )
+
+            // MASTER 的 version 同步更新同首歌的 BASIC/ADVANCED/EXPERT song record
+            if (difficulty === 'MASTER') {
+              for (const otherDiff of ['BASIC', 'ADVANCED', 'EXPERT']) {
+                const otherSongKey = `${score.title}_${chartType}_${otherDiff}`
+                await db.query(
+                  `UPDATE $song SET version = $version`,
+                  { song: new RecordId('song', otherSongKey), version: versionCode }
+                )
+              }
+            }
           }
 
           // 沒有成績的 MASTER：只寫 version 到 score，不覆蓋成績
@@ -502,8 +513,7 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
     const achievement = score?.achievement ?? 0
     const fcVal       = score?.fc   ?? null
     const syncVal     = score?.sync ?? null
-    // 版本優先用書籤 sync 的（score.version），fallback 到 song.version
-    const ver = score?.version ?? chart.version ?? '10000'
+    const ver = chart.version ?? '10000'
 
     if (!versionMap.has(ver)) {
       versionMap.set(ver, {
