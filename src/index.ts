@@ -160,6 +160,19 @@ app.post('/api/scores/sync', async (c) => {
         : null
 
       try {
+        // 先更新 song.version（無論有沒有成績都更新）
+        if (versionCode) {
+          await db.query(
+            `UPDATE $song SET version = $version`,
+            { song: new RecordId('song', songKey), version: versionCode }
+          )
+        }
+
+        // 沒有成績就跳過 score 寫入
+        if (score.achievement === null || score.achievement === undefined) {
+          continue
+        }
+
         await db.query(`
         INSERT INTO score {
           player: $player, song: $song, difficulty: $difficulty,
@@ -171,8 +184,8 @@ app.post('/api/scores/sync', async (c) => {
         sync = $input.sync, updated_at = time::now(),
         dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars
         `, {
-          player:    new RecordId('player', playerKey),
-          song:      new RecordId('song', songKey),
+          player:     new RecordId('player', playerKey),
+          song:       new RecordId('song', songKey),
           difficulty,
           chart_type: chartType,
           level:      score.level,
@@ -183,18 +196,9 @@ app.post('/api/scores/sync', async (c) => {
           dx_total:   score.dx_total  ?? undefined,
           dx_stars:   score.dx_stars  ?? undefined,
         });
-
-        // 同步更新 song.version（用官網抓到的版本覆蓋）
-        if (versionCode) {
-          await db.query(
-            `UPDATE $song SET version = $version`,
-            { song: new RecordId('song', songKey), version: versionCode }
-          )
-        }
-
         success++;
       } catch(e) {
-        console.error('sync error:', e);
+        console.error('sync error:', score.title, score.chart_type, score.difficulty, e);
         failed++;
       }
     }
@@ -215,7 +219,7 @@ app.get('/api/scores/all', async (c) => {
     const playerKey = playerId.split(':')[1]
     const result = await db.query(`
     SELECT song.title AS title, song.chart_type AS chart_type,
-    achievement, difficulty, fc, sync
+    achievement, difficulty, fc, sync, dx_score, dx_total, dx_stars
     FROM score WHERE player = $player
     `, { player: new RecordId('player', playerKey) })
     return c.json(result[0])
