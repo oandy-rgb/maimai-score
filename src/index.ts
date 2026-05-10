@@ -170,6 +170,11 @@ app.post('/api/scores/sync', async (c) => {
             )
           }
 
+          // 沒有成績就跳過 score 寫入
+          if (score.achievement === null || score.achievement === undefined) {
+            return
+          }
+
           await db.query(`
           INSERT INTO score {
             player: $player, song: $song, difficulty: $difficulty,
@@ -351,24 +356,14 @@ function buildSongMap(charts: any[]) {
 }
 
 app.get('/api/songs', async (c) => {
-  const playerId = await getPlayerFromToken(c)
-  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-  const playerKey = playerId.split(':')[1]
   try {
     const result = await db.query(`
-      SELECT
-        song.title AS title, song.artist AS artist, song.image_name AS image_name,
-        song.chart_type AS chart_type, song.difficulty AS difficulty, song.level AS level,
-        song.chart_constant AS chart_constant, song.chart_designer AS chart_designer,
-        song.aliases AS aliases,
-        song.date_intl_added AS date_intl_added, song.date_intl_updated AS date_intl_updated,
-        song.date_added AS date_added, song.date_updated AS date_updated,
-        song.notes_tap AS notes_tap, song.notes_hold AS notes_hold,
-        song.notes_slide AS notes_slide, song.notes_touch AS notes_touch,
-        song.notes_break AS notes_break
-      FROM score WHERE player = $player
-      FETCH song
-    `, { player: new RecordId('player', playerKey) })
+      SELECT title, artist, image_name, chart_type, difficulty, level,
+      chart_constant, chart_designer, aliases,
+      date_intl_added, date_intl_updated, date_added, date_updated,
+      notes_tap, notes_hold, notes_slide, notes_touch, notes_break
+      FROM song
+    `)
     const songs = buildSongMap(result[0] as any[])
     return c.json(songs)
   } catch (error) {

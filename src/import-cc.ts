@@ -123,6 +123,9 @@ async function importCC() {
   let tasks: (() => Promise<void>)[] = []
 
   for (const song of songs) {
+    // 只匯入國際版有的曲子
+    if (!song.intl || song.intl === '0') continue
+
     // 判斷是否同時有 STANDARD 和 DX 譜
     const hasStd = DIFFS.some(d => song[`lev_${d.key}_i`])
     const hasDx  = DIFFS.some(d => song[`dx_lev_${d.key}_i`])
