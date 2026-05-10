@@ -460,7 +460,6 @@ const VERSION_BADGE_NAME: Record<string, string> = {
 const BADGE_DIFFS = ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER'] as const
 
 function buildBadgeProgress(allCharts: any[], scores: any[]) {
-  // scores 裡的資料已經跟 chart 合併，直接用 chart 的 achievement/fc/sync
   const scoreMap = new Map<string, any>()
   for (const s of scores) scoreMap.set(s.song?.toString() ?? '', s)
 
@@ -476,10 +475,10 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
     const v = versionMap.get(ver)!
     v.total++
 
-    // chart 已包含 achievement/fc/sync（從 score row 來）
-    const achievement = chart.achievement ?? 0
-    const fcVal       = chart.fc   ?? null
-    const syncVal     = chart.sync ?? null
+    const score = scoreMap.get(chart.id?.toString() ?? '')
+    const achievement = score?.achievement ?? 0
+    const fcVal       = score?.fc   ?? null
+    const syncVal     = score?.sync ?? null
 
     const isSss = achievement >= 100.0
     const isFc  = ['fc', 'fcp', 'ap', 'app'].includes(fcVal)
@@ -524,37 +523,13 @@ app.get('/api/badge-progress', async (c) => {
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const playerKey = playerId.split(':')[1]
 
-    // song 列表從 score 來，只包含書籤 sync 過的歌
-    const result = await db.query(`
-      SELECT
-        song.id AS id, song.title AS title, song.chart_type AS chart_type,
-        song.difficulty AS difficulty, song.version AS version,
-        song.image_name AS image_name,
-        achievement, fc, sync
-      FROM score
-      WHERE player = $player AND song.difficulty != 'REMASTER'
-      FETCH song
-    `, { player: new RecordId('player', playerKey) })
+    const [scoresResult, songsResult] = await Promise.all([
+      db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $player`,
+               { player: new RecordId('player', playerKey) }),
+      db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+    ])
 
-    const rows = result[0] as any[]
-
-    // 把每筆 score row 當成 chart + score 合併處理
-    const charts = rows.map(r => ({
-      id:         r.id,
-      title:      r.title,
-      chart_type: r.chart_type,
-      difficulty: r.difficulty,
-      version:    r.version,
-      image_name: r.image_name,
-    }))
-    const scores = rows.map(r => ({
-      song:        r.id,
-      achievement: r.achievement,
-      fc:          r.fc,
-      sync:        r.sync,
-    }))
-
-    return c.json(buildBadgeProgress(charts, scores))
+    return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
 })
 
 // ==========================================
