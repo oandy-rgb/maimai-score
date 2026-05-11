@@ -129,11 +129,19 @@ app.post('/api/scores/sync', async (c) => {
   const playerId = await getPlayerFromToken(c);
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
-  // 🌟 修正：讀取一次 JSON 並解構出所有欄位
-  const { playerName, danImgUrl, iconImgUrl, scores } = await c.req.json();
+  const body = await c.req.json();
+
+  // 立刻回應，背景處理
+  processSyncJob(playerId, body).catch(console.error)
+
+  return c.json({ ok: true })
+});
+
+async function processSyncJob(playerId: string, body: any) {
+  const { playerName, danImgUrl, iconImgUrl, scores } = body;
   const playerKey = playerId.split(':')[1];
 
-  // 1. 同步更新玩家遊戲內的名稱、段位圖、頭像圖
+  // 1. 更新玩家資訊
   if (playerName) {
     await db.query(
       'UPDATE player SET in_game_name = $name, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
@@ -149,7 +157,7 @@ app.post('/api/scores/sync', async (c) => {
   // 2. 處理分數同步（平行處理）
   let success = 0, failed = 0;
   if (Array.isArray(scores)) {
-    const PARALLEL = 10 // 每批平行處理筆數
+    const PARALLEL = 10
     for (let i = 0; i < scores.length; i += PARALLEL) {
       const batch = scores.slice(i, i + PARALLEL)
       await Promise.allSettled(batch.map(async (score) => {
@@ -198,7 +206,7 @@ app.post('/api/scores/sync', async (c) => {
               version:    versionCode ?? undefined,
             })
 
-            // MASTER 的 version 傳播到 BASIC/ADVANCED/EXPERT
+            // MASTER 的 version 傳播到 BASIC/ADVANCED/EXPERT score
             if (difficulty === 'MASTER' && versionCode) {
               for (const otherDiff of ['BASIC', 'ADVANCED', 'EXPERT']) {
                 const otherSongKey = `${score.title}_${chartType}_${otherDiff}`
@@ -257,8 +265,8 @@ app.post('/api/scores/sync', async (c) => {
   WHERE player = $player AND chart_constant = NONE
   `, { player: new RecordId('player', playerKey) });
 
-  return c.json({ ok: true, success, failed });
-});
+  console.log(`✅ sync 完成 player=${playerKey} success=${success} failed=${failed}`)
+}
 
 app.get('/api/scores/all', async (c) => {
   const playerId = await getPlayerFromToken(c)
