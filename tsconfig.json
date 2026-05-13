@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
     "strict": true,
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   }

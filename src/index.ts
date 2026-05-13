@@ -1,24 +1,139 @@
 import { Hono } from 'hono'
-import { connectDB, db } from './db'
+import { connectDB, query, one, transaction } from './db'
 import { initSchema } from './schema'
 import { cors } from 'hono/cors'
-import { RecordId } from 'surrealdb'
 import { OAuth2Client } from 'google-auth-library'
 import { SignJWT, jwtVerify } from 'jose'
+import { createHash } from 'node:crypto'
+import { buildNmfResponseFromModel } from './recommend/inference'
+import { calcRating } from './recommend/shared'
 
 const GOOGLE_CLIENT_ID = '785041222690-7l200uqtgsoio0bugjd2a1bh8bti629j.apps.googleusercontent.com'
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET is required in production')
+}
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret-change-in-prod')
+const FRIEND_CODE_PEPPER = process.env.FRIEND_CODE_PEPPER ?? process.env.JWT_SECRET ?? 'dev-friend-code-pepper'
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 
 const app = new Hono()
 
+const toRecordId = (table: string, id: string) => `${table}:${id}`
+const fromRecordId = (id: string, table?: string) => {
+  const prefix = table ? `${table}:` : ''
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id
+}
+
+function publicScore(row: any) {
+  return { ...row, id: toRecordId('score', row.id) }
+}
+
+function publicSong(row: any) {
+  return { ...row, id: toRecordId('song', row.id) }
+}
+
+function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = getKey(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function uniqueLastBy<T>(items: T[], getKey: (item: T) => string): T[] {
+  const map = new Map<string, T>()
+  for (const item of items) {
+    map.set(getKey(item), item)
+  }
+  return Array.from(map.values())
+}
+
+function buildValues(rows: any[][]) {
+  const values: any[] = []
+  const placeholders = rows.map((row) => {
+    const start = values.length
+    values.push(...row)
+    return `(${row.map((_, i) => `$${start + i + 1}`).join(', ')})`
+  })
+  return { placeholders: placeholders.join(', '), values }
+}
+
+function normalizeFriendCode(value: unknown) {
+  const normalized = String(value ?? '').replace(/\D/g, '')
+  return normalized.length >= 6 ? normalized : null
+}
+
+function hashFriendCode(value: string) {
+  return createHash('sha256')
+    .update(`${FRIEND_CODE_PEPPER}:${value}`)
+    .digest('hex')
+}
+
+const rateLimitBuckets = new Map<string, { count: number, resetAt: number }>()
+
+function getClientIp(c: any) {
+  const forwarded = c.req.header('cf-connecting-ip')
+    ?? c.req.header('x-forwarded-for')
+    ?? ''
+  return forwarded.split(',')[0].trim() || c.req.header('x-real-ip') || 'unknown'
+}
+
+function rateLimit(max: number, windowMs: number, scope: string) {
+  return async (c: any, next: any) => {
+    const now = Date.now()
+    const auth = c.req.header('Authorization') ?? ''
+    const tokenKey = auth.startsWith('Bearer ') ? auth.slice(7, 23) : ''
+    const key = `${scope}:${getClientIp(c)}:${tokenKey}`
+    const bucket = rateLimitBuckets.get(key)
+
+    if (!bucket || bucket.resetAt <= now) {
+      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs })
+      return next()
+    }
+
+    if (bucket.count >= max) {
+      const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))
+      return c.json({ error: 'Too many requests', retryAfter }, 429, {
+        'Retry-After': String(retryAfter),
+      })
+    }
+
+    bucket.count++
+    return next()
+  }
+}
+
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, bucket] of rateLimitBuckets) {
+    if (bucket.resetAt <= now) rateLimitBuckets.delete(key)
+  }
+}, 60_000).unref?.()
+
+const allowedOrigins = new Set([
+  process.env.FRONTEND_ORIGIN ?? 'https://mai.o-andy.com',
+  'https://maimaidx-eng.com',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+])
+
 app.use('*', cors({
-  origin: '*',
+  origin: (origin) => {
+    if (!origin) return process.env.FRONTEND_ORIGIN ?? 'https://mai.o-andy.com'
+    return allowedOrigins.has(origin) ? origin : null
+  },
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   exposeHeaders: ['Content-Length'],
   maxAge: 600,
 }))
+
+app.use('/auth/google', rateLimit(10, 60_000, 'auth'))
+app.use('/api/scores/sync', rateLimit(12, 60_000, 'sync'))
+app.use('/api/*', rateLimit(120, 60_000, 'api'))
+app.use('/b50', rateLimit(60, 60_000, 'b50'))
 
 connectDB()
 .then(() => initSchema())
@@ -43,32 +158,78 @@ const VERSION_LIST: Record<string, string> = {
   "26500": "CiRCLE PLUS",
 }
 
-function calcRating(cc: number, achievement: number): number {
-  const a = Math.min(achievement, 100.5)
-  let multiplier: number
-  if (a >= 100.5) multiplier = 22.4
-    else if (a >= 100.0) multiplier = 21.6
-      else if (a >= 99.5) multiplier = 21.1
-        else if (a >= 99.0) multiplier = 20.8
-          else if (a >= 98.0) multiplier = 20.3
-            else if (a >= 97.0) multiplier = 20.0
-              else if (a >= 94.0) multiplier = 16.8
-                else if (a >= 90.0) multiplier = 15.2
-                  else if (a >= 80.0) multiplier = 13.6
-                    else multiplier = 0
-                      return Math.floor(cc * multiplier * a / 100)
+interface AuthPayload {
+  playerId: string
+  email?: string
 }
 
-async function getPlayerFromToken(c: any): Promise<string | null> {
+async function getAuthFromToken(c: any): Promise<AuthPayload | null> {
   const auth = c.req.header('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
     try {
       const token = auth.slice(7)
       const { payload } = await jwtVerify(token, JWT_SECRET)
-      return payload.playerId as string
+      return {
+        playerId: payload.playerId as string,
+        email: payload.email as string | undefined,
+      }
     } catch {
       return null
     }
+}
+
+async function getPlayerFromToken(c: any): Promise<string | null> {
+  return (await getAuthFromToken(c))?.playerId ?? null
+}
+
+function normalizeUsername(value: string) {
+  return value.trim().replace(/\s+/g, ' ').slice(0, 16)
+}
+
+async function buildUniqueUsername(base: string) {
+  const normalized = normalizeUsername(base)
+  const fallback = normalized.length >= 2 ? normalized : 'Player'
+
+  for (let i = 0; i < 20; i++) {
+    const suffix = i === 0 ? '' : String(i + 1)
+    const candidate = `${fallback.slice(0, 16 - suffix.length)}${suffix}`
+    const exists = await one(`SELECT id FROM player WHERE username = $1 LIMIT 1`, [candidate])
+    if (!exists) return candidate
+  }
+
+  return `Player${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function ensurePlayerExists(playerId: string, email?: string, username?: string) {
+  const playerKey = fromRecordId(playerId, 'player')
+
+  if (email) {
+    const existing = await one(`SELECT id FROM player WHERE email = $1 LIMIT 1`, [email])
+    if (existing) {
+      if (username) {
+        await query(`UPDATE player SET in_game_name = $1 WHERE id = $2`, [username, existing.id])
+      }
+      return existing.id as string
+    }
+  }
+
+  const uniqueUsername = await buildUniqueUsername(username ?? email?.split('@')[0] ?? 'Player')
+  const created = await one(`
+    INSERT INTO player (id, email, username, in_game_name)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (id) DO UPDATE SET
+      email = COALESCE(player.email, EXCLUDED.email),
+      username = COALESCE(player.username, EXCLUDED.username),
+      in_game_name = COALESCE(EXCLUDED.in_game_name, player.in_game_name)
+    RETURNING id
+  `, [
+    playerKey,
+    email ?? null,
+    uniqueUsername,
+    username ?? null,
+  ])
+
+  return created.id as string
 }
 
 // ==========================================
@@ -76,6 +237,23 @@ async function getPlayerFromToken(c: any): Promise<string | null> {
 // ==========================================
 
 app.get('/health', async (c) => c.json({ status: 'ok' }))
+
+app.get('/api/me', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const player = await one(
+    `SELECT username, in_game_name, email FROM player WHERE id = $1`,
+    [fromRecordId(playerId, 'player')],
+  )
+  if (!player) return c.json({ error: 'Not found' }, 404)
+
+  return c.json({
+    username: player.username,
+    in_game_name: player.in_game_name,
+    display_name: player.username || player.in_game_name || player.email?.split('@')[0] || 'Player',
+  })
+})
 
 app.post('/auth/google', async (c) => {
   const { idToken } = await c.req.json()
@@ -85,18 +263,25 @@ app.post('/auth/google', async (c) => {
     const email = payload.email!
     const name = payload.name ?? email
 
-    // src/index.ts 的 app.post('/auth/google', ...) 區塊
-    const existing = await db.query<any[]>(`SELECT * FROM player WHERE email = $email LIMIT 1`, { email })
+    const existing = await one(`SELECT * FROM player WHERE email = $1 LIMIT 1`, [email])
     let playerId: string
-    let currentUsername: string // 新增變數
+    let currentUsername: string
 
-    if (existing[0]?.length > 0) {
-      playerId = existing[0][0].id.toString()
-      currentUsername = existing[0][0].username // 從資料庫抓出改過的名字
+    if (existing) {
+      playerId = toRecordId('player', existing.id)
+      currentUsername = existing.username
     } else {
-      const created = await db.query<any[]>(`CREATE player SET email = $email, username = $name`, { email, name })
-      playerId = created[0][0].id.toString()
-      currentUsername = name
+      const username = await buildUniqueUsername(name || email.split('@')[0])
+      const created = await one(
+        `INSERT INTO player (email, username)
+         VALUES ($1, $2)
+         ON CONFLICT (email) DO UPDATE SET
+           email = EXCLUDED.email
+         RETURNING *`,
+        [email, username],
+      )
+      playerId = toRecordId('player', created.id)
+      currentUsername = created.username
     }
 
     const token = await new SignJWT({ playerId, email })
@@ -126,179 +311,236 @@ const VERSION_INDEX_TO_CODE: Record<number, string> = {
 }
 
 app.post('/api/scores/sync', async (c) => {
-  const playerId = await getPlayerFromToken(c);
-  if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
+  const auth = await getAuthFromToken(c);
+  if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401);
 
   const body = await c.req.json();
 
-  // 立刻回應，背景處理
-  processSyncJob(playerId, body).catch(console.error)
-
-  return c.json({ ok: true })
+  try {
+    const result = await processSyncJob(auth.playerId, body, auth.email)
+    return c.json({ ok: true, ...result })
+  } catch (error) {
+    console.error('sync failed:', error)
+    return c.json({ error: 'Sync failed' }, 500)
+  }
 });
 
-async function processSyncJob(playerId: string, body: any) {
+async function processSyncJob(playerId: string, body: any, email?: string) {
   const { playerName, danImgUrl, iconImgUrl, scores } = body;
-  const playerKey = playerId.split(':')[1];
+  const playerKey = await ensurePlayerExists(playerId, email, playerName)
 
   // 1. 更新玩家資訊
   if (playerName) {
-    await db.query(
-      'UPDATE player SET in_game_name = $name, dan_img_url = $dan, icon_img_url = $icon WHERE id = $id',
-      {
-        id: new RecordId('player', playerKey),
-        name: playerName,
-        dan: danImgUrl,
-        icon: iconImgUrl
-      }
+    await query(
+      'UPDATE player SET in_game_name = $1, dan_img_url = $2, icon_img_url = $3 WHERE id = $4',
+      [playerName, danImgUrl, iconImgUrl, playerKey],
     );
   }
 
-  // 2. 處理分數同步（平行處理）
-  let success = 0, failed = 0;
-  if (Array.isArray(scores)) {
-    const PARALLEL = 10
-    for (let i = 0; i < scores.length; i += PARALLEL) {
-      const batch = scores.slice(i, i + PARALLEL)
-      await Promise.allSettled(batch.map(async (score) => {
-        const chartType = score.chart_type?.toUpperCase();
-        const difficulty = score.difficulty?.toUpperCase();
-        const songKey = `${score.title}_${chartType}_${difficulty}`;
+  if (!Array.isArray(scores) || scores.length === 0) {
+    return { scores: 0, noAchievement: 0 }
+  }
 
-        const versionCode = score.version_index != null
-          ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
-          : null
+  // 2. 收集資料，分組處理
+  const versionGroups = new Map<string, { versionCode: string, chartType: string, titles: string[] }>()
+  let scoreRecords: any[] = []
+  let noAchievementRecords: any[] = []
 
-        try {
-          // 只有 MASTER 和 REMASTER 才更新 song.version
-          if (versionCode && (difficulty === 'MASTER' || difficulty === 'REMASTER')) {
-            await db.query(
-              `UPDATE $song SET version = $version`,
-              { song: new RecordId('song', songKey), version: versionCode }
-            )
+  for (const score of scores) {
+    const chartType  = score.chart_type?.toUpperCase()
+    const difficulty = score.difficulty?.toUpperCase()
+    const songKey    = `${score.title}_${chartType}_${difficulty}`
+    const versionCode = score.version_index != null
+      ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
+      : null
 
-            // MASTER 的 version 同步更新同首歌的 BASIC/ADVANCED/EXPERT song record
-            if (difficulty === 'MASTER') {
-              for (const otherDiff of ['BASIC', 'ADVANCED', 'EXPERT']) {
-                const otherSongKey = `${score.title}_${chartType}_${otherDiff}`
-                await db.query(
-                  `UPDATE $song SET version = $version`,
-                  { song: new RecordId('song', otherSongKey), version: versionCode }
-                )
-              }
-            }
-          }
+    // 收集 MASTER 的版本分組（用於批次更新 song.version）
+    if (versionCode && difficulty === 'MASTER') {
+      const groupKey = `${versionCode}_${chartType}`
+      if (!versionGroups.has(groupKey)) {
+        versionGroups.set(groupKey, { versionCode, chartType, titles: [] })
+      }
+      versionGroups.get(groupKey)!.titles.push(score.title)
+    }
 
-          // 沒有成績的 MASTER：只寫 version 到 score，不覆蓋成績
-          if (score.achievement === null || score.achievement === undefined) {
-            await db.query(`
-            INSERT INTO score {
-              player: $player, song: $song, difficulty: $difficulty,
-              chart_type: $chart_type, level: $level, version: $version
-            } ON DUPLICATE KEY UPDATE
-            version = $input.version
-            `, {
-              player:     new RecordId('player', playerKey),
-              song:       new RecordId('song', songKey),
-              difficulty,
-              chart_type: chartType,
-              level:      score.level ?? '',
-              version:    versionCode ?? undefined,
-            })
-
-            // MASTER 的 version 傳播到 BASIC/ADVANCED/EXPERT score
-            if (difficulty === 'MASTER' && versionCode) {
-              for (const otherDiff of ['BASIC', 'ADVANCED', 'EXPERT']) {
-                const otherSongKey = `${score.title}_${chartType}_${otherDiff}`
-                await db.query(
-                  `UPDATE score SET version = $version WHERE song = $song AND player = $player`,
-                  {
-                    version: versionCode,
-                    song: new RecordId('song', otherSongKey),
-                    player: new RecordId('player', playerKey),
-                  }
-                )
-              }
-            }
-            success++
-            return
-          }
-
-          await db.query(`
-          INSERT INTO score {
-            player: $player, song: $song, difficulty: $difficulty,
-            chart_type: $chart_type, level: $level, achievement: $achievement,
-            fc: $fc, sync: $sync,
-            dx_score: $dx_score, dx_total: $dx_total, dx_stars: $dx_stars,
-            version: $version
-          } ON DUPLICATE KEY UPDATE
-          achievement = $input.achievement, fc = $input.fc,
-          sync = $input.sync, updated_at = time::now(),
-          dx_score = $input.dx_score, dx_total = $input.dx_total, dx_stars = $input.dx_stars,
-          version = $input.version
-          `, {
-            player:      new RecordId('player', playerKey),
-            song:        new RecordId('song', songKey),
-            difficulty,
-            chart_type:  chartType,
-            level:       score.level ?? '',
-            achievement: score.achievement,
-            fc:          score.fc   || undefined,
-            sync:        score.sync || undefined,
-            dx_score:    score.dx_score  ?? undefined,
-            dx_total:    score.dx_total  ?? undefined,
-            dx_stars:    score.dx_stars  ?? undefined,
-            version:     versionCode ?? undefined,
-          });
-          success++;
-        } catch(e) {
-          console.error('sync error:', score.title, score.chart_type, score.difficulty, e);
-          failed++;
-        }
-      }))
+    // 收集 score 資料
+    if (score.achievement === null || score.achievement === undefined) {
+      // 沒有成績：只寫 version
+      noAchievementRecords.push({
+        id:         `${playerKey}_${songKey}`,
+        player_id:  playerKey,
+        song_id:    songKey,
+        difficulty,
+        chart_type: chartType,
+        level:      score.level ?? '',
+        version:    versionCode ?? undefined,
+      })
+    } else {
+      scoreRecords.push({
+        id:          `${playerKey}_${songKey}`,
+        player_id:   playerKey,
+        song_id:     songKey,
+        difficulty,
+        chart_type:  chartType,
+        level:       score.level ?? '',
+        achievement: score.achievement,
+        fc:          score.fc   || undefined,
+        sync:        score.sync || undefined,
+        dx_score:    score.dx_score  ?? undefined,
+        dx_total:    score.dx_total  ?? undefined,
+        dx_stars:    score.dx_stars  ?? undefined,
+        version:     versionCode ?? undefined,
+      })
     }
   }
 
-  // 更新定數與版本資訊
-  await db.query(`
-  UPDATE score SET chart_constant = song.chart_constant, version = song.version
-  WHERE player = $player AND chart_constant = NONE
-  `, { player: new RecordId('player', playerKey) });
+  scoreRecords = uniqueLastBy(scoreRecords, (record) => `${record.player_id}_${record.song_id}`)
+  noAchievementRecords = uniqueLastBy(noAchievementRecords, (record) => `${record.player_id}_${record.song_id}`)
 
-  console.log(`✅ sync 完成 player=${playerKey} success=${success} failed=${failed}`)
+  // 3. 批次更新 song.version（按版本分組，一次 UPDATE）
+  for (const { versionCode, chartType, titles } of versionGroups.values()) {
+    // 更新 MASTER
+    await query(
+      `UPDATE song SET version = $1 WHERE title = ANY($2::text[]) AND chart_type = $3 AND difficulty = 'MASTER'`,
+      [versionCode, titles, chartType],
+    )
+    // 同步更新 BASIC/ADVANCED/EXPERT
+    for (const diff of ['BASIC', 'ADVANCED', 'EXPERT']) {
+      await query(
+        `UPDATE song SET version = $1 WHERE title = ANY($2::text[]) AND chart_type = $3 AND difficulty = $4`,
+        [versionCode, titles, chartType, diff],
+      )
+    }
+  }
+
+  // REMASTER 版本也更新
+  const remasterGroups = new Map<string, { versionCode: string, chartType: string, titles: string[] }>()
+  for (const score of scores) {
+    const chartType  = score.chart_type?.toUpperCase()
+    const difficulty = score.difficulty?.toUpperCase()
+    const versionCode = score.version_index != null
+      ? (VERSION_INDEX_TO_CODE[score.version_index] ?? null)
+      : null
+    if (versionCode && difficulty === 'REMASTER') {
+      const groupKey = `${versionCode}_${chartType}`
+      if (!remasterGroups.has(groupKey)) {
+        remasterGroups.set(groupKey, { versionCode, chartType, titles: [] })
+      }
+      remasterGroups.get(groupKey)!.titles.push(score.title)
+    }
+  }
+  for (const { versionCode, chartType, titles } of remasterGroups.values()) {
+    await query(
+      `UPDATE song SET version = $1 WHERE title = ANY($2::text[]) AND chart_type = $3 AND difficulty = 'REMASTER'`,
+      [versionCode, titles, chartType],
+    )
+  }
+
+  // 4. Bulk INSERT score（有成績的）
+  const CHUNK = 200
+  await transaction(async (client) => {
+    for (let i = 0; i < scoreRecords.length; i += CHUNK) {
+      const chunk = scoreRecords.slice(i, i + CHUNK)
+      const { placeholders, values } = buildValues(chunk.map((record) => [
+        record.id,
+        record.player_id,
+        record.song_id,
+        record.difficulty,
+        record.chart_type,
+        record.level,
+        record.achievement,
+        record.fc,
+        record.sync,
+        record.dx_score,
+        record.dx_total,
+        record.dx_stars,
+        record.version,
+      ]))
+
+      await client.query(`
+          INSERT INTO score (
+            id, player_id, song_id, difficulty, chart_type, level, achievement,
+            fc, sync, dx_score, dx_total, dx_stars, version
+          )
+          VALUES ${placeholders}
+          ON CONFLICT (player_id, song_id) DO UPDATE SET
+            achievement = EXCLUDED.achievement,
+            fc = EXCLUDED.fc,
+            sync = EXCLUDED.sync,
+            updated_at = now(),
+            dx_score = EXCLUDED.dx_score,
+            dx_total = EXCLUDED.dx_total,
+            dx_stars = EXCLUDED.dx_stars,
+            version = EXCLUDED.version
+        `, values)
+    }
+
+    // 5. Bulk INSERT 沒有成績的（只寫 version，不覆蓋成績）
+    for (let i = 0; i < noAchievementRecords.length; i += CHUNK) {
+      const chunk = noAchievementRecords.slice(i, i + CHUNK)
+      const { placeholders, values } = buildValues(chunk.map((record) => [
+        record.id,
+        record.player_id,
+        record.song_id,
+        record.difficulty,
+        record.chart_type,
+        record.level,
+        record.version,
+      ]))
+
+      await client.query(`
+          INSERT INTO score (id, player_id, song_id, difficulty, chart_type, level, version)
+          VALUES ${placeholders}
+          ON CONFLICT (player_id, song_id) DO UPDATE SET
+            version = EXCLUDED.version
+        `, values)
+    }
+  })
+
+  console.log(`✅ sync 完成 player=${playerKey} scores=${scoreRecords.length} noAchievement=${noAchievementRecords.length}`)
+  return { scores: scoreRecords.length, noAchievement: noAchievementRecords.length }
 }
 
 app.get('/api/scores/all', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
-    const result = await db.query(`
-    SELECT song.title AS title, song.chart_type AS chart_type,
-    achievement, difficulty, fc, sync, dx_score, dx_total, dx_stars
-    FROM score WHERE player = $player
-    `, { player: new RecordId('player', playerKey) })
-    return c.json(result[0])
+    const playerKey = fromRecordId(playerId, 'player')
+    const result = await query(`
+      SELECT song.title AS title, song.chart_type AS chart_type,
+        score.achievement, score.difficulty, score.fc, score.sync,
+        score.dx_score, score.dx_total, score.dx_stars
+      FROM score
+      JOIN song ON song.id = score.song_id
+      WHERE score.player_id = $1
+    `, [playerKey])
+    return c.json(result)
 })
 
 app.get('/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
+    const playerKey = fromRecordId(playerId, 'player')
     // 🌟 新增：查詢玩家資訊
-    const playerResult = await db.query(`
-    SELECT username, in_game_name, dan_img_url, icon_img_url FROM player WHERE id = $player
-    `, { player: new RecordId('player', playerKey) })
-    const pInfo = (playerResult[0] as any[])[0] || {}
+    const pInfo = await one(`
+      SELECT username, in_game_name, dan_img_url, icon_img_url FROM player WHERE id = $1
+    `, [playerKey]) ?? {}
 
-    const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, sync,
-    song.title AS title, song.image_name AS image_name
-    FROM score
-    WHERE chart_constant != NONE AND player = $player
-    ORDER BY achievement DESC
-    `, { player: new RecordId('player', playerKey) })
+    const result = await query(`
+      SELECT score.id, score.achievement, score.chart_type, score.difficulty, score.level,
+        COALESCE(score.chart_constant, song.chart_constant) AS chart_constant,
+        COALESCE(score.version, song.version) AS version,
+        score.fc, score.sync, song.title AS title, song.image_name AS image_name
+      FROM score
+      JOIN song ON song.id = score.song_id
+      WHERE COALESCE(score.chart_constant, song.chart_constant) IS NOT NULL
+        AND score.player_id = $1
+      ORDER BY score.achievement DESC
+    `, [playerKey])
 
-    const scores = result[0] as any[]
+    const scores = uniqueBy(
+      result.map(publicScore),
+      (s: any) => `${s.title}_${s.chart_type}_${s.difficulty}`,
+    )
     const withRating = scores.map(s => {
       const versionNum = parseInt(s.version) || 0
       return {
@@ -327,6 +569,24 @@ app.get('/api/proxy-image', async (c) => {
   // 從 Query String 取得想要抓取的圖片網址
   const targetUrl = c.req.query('url');
   if (!targetUrl) return c.json({ error: 'Missing URL parameter' }, 400);
+
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(targetUrl)
+  } catch {
+    return c.json({ error: 'Invalid URL' }, 400)
+  }
+
+  const allowedImageHosts = new Set([
+    'cdn.jsdelivr.net',
+    'maimaidx.jp',
+    'maimaidx-eng.com',
+    'maimaidx-eng.sega.com',
+  ])
+
+  if (parsedUrl.protocol !== 'https:' || !allowedImageHosts.has(parsedUrl.hostname)) {
+    return c.json({ error: 'Image host not allowed' }, 400)
+  }
 
   try {
     // 讓後端發送請求去抓圖片 (加上 User-Agent 模擬一般瀏覽器避免被擋)
@@ -360,14 +620,10 @@ return c.body(arrayBuffer, 200, {
 // 歌曲
 // ==========================================
 
-let _songsCache: any[] | null = null
-let _songsCacheAt = 0
-const SONGS_CACHE_TTL = 60 * 60 * 1000
-
 function buildSongMap(charts: any[]) {
   const songMap = new Map<string, any>()
   for (const chart of charts) {
-    const key = `${chart.title}_${chart.chart_type}`
+    const key = `${chart.title}_${chart.chart_type}_${chart.image_name}`
     if (!songMap.has(key)) {
       songMap.set(key, {
         id: key,
@@ -409,26 +665,20 @@ function buildSongMap(charts: any[]) {
 
 app.get('/api/songs', async (c) => {
   try {
-    const result = await db.query(`
+    const result = await query(`
       SELECT title, artist, image_name, chart_type, difficulty, level,
       chart_constant, chart_designer, aliases,
       date_intl_added, date_intl_updated, date_added, date_updated,
       notes_tap, notes_hold, notes_slide, notes_touch, notes_break
       FROM song
     `)
-    const songs = buildSongMap(result[0] as any[])
+    const songs = buildSongMap(result)
     return c.json(songs)
   } catch (error) {
     return c.json({ error: '無法獲取歌曲資料' }, 500)
   }
 })
 
-
-app.post('/api/songs/cache/clear', async (c) => {
-  _songsCache = null
-  _songsCacheAt = 0
-  return c.json({ ok: true })
-})
 
 // ==========================================
 // 📝 待打清單
@@ -437,35 +687,42 @@ app.post('/api/songs/cache/clear', async (c) => {
 app.get('/api/todo', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const result = await db.query(`
-    SELECT * FROM todo WHERE player = $player ORDER BY created_at DESC
-    `, { player: new RecordId('player', playerId.split(':')[1]) })
-    return c.json(result[0])
+    const result = await query(`
+      SELECT id, song_key, title, chart_type, image_name, difficulty,
+        target_achievement, target_fc, source, done, created_at
+      FROM todo WHERE player_id = $1 ORDER BY created_at DESC
+    `, [fromRecordId(playerId, 'player')])
+    return c.json(result.map((row: any) => ({ ...row, id: toRecordId('todo', row.id) })))
 })
+
+function normalizeTargetAchievement(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(101, Math.round(n * 10) / 10))
+}
 
 app.post('/api/todo', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
+    const playerKey = fromRecordId(playerId, 'player')
     const { title, chart_type, image_name, difficulty, target_achievement, target_fc, source } = await c.req.json()
     const songKey = `${title}_${chart_type}_${difficulty}`
     try {
-      await db.query(`
-      INSERT INTO todo {
-        player: $player, song_key: $song_key, title: $title,
-        chart_type: $chart_type, image_name: $image_name, difficulty: $difficulty,
-        target_achievement: $target_achievement, target_fc: $target_fc,
-        source: $source, done: false
-      } ON DUPLICATE KEY UPDATE
-      target_achievement = $input.target_achievement,
-      target_fc = $input.target_fc, done = false
-      `, {
-        player: new RecordId('player', playerKey),
-                     song_key: songKey, title, chart_type, image_name, difficulty,
-                     target_achievement: target_achievement || undefined,
-                     target_fc: target_fc || undefined,
-                     source: source || 'manual',
-      })
+      await query(`
+        INSERT INTO todo (
+          player_id, song_key, title, chart_type, image_name, difficulty,
+          target_achievement, target_fc, source, done
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false)
+        ON CONFLICT (player_id, song_key) DO UPDATE SET
+          target_achievement = EXCLUDED.target_achievement,
+          target_fc = EXCLUDED.target_fc,
+          done = false
+      `, [
+        playerKey, songKey, title, chart_type, image_name, difficulty,
+        normalizeTargetAchievement(target_achievement), target_fc || null, source || 'manual',
+      ])
       return c.json({ ok: true })
     } catch (e) {
       return c.json({ error: 'Failed' }, 500)
@@ -475,17 +732,40 @@ app.post('/api/todo', async (c) => {
 app.patch('/api/todo/:id', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const { done } = await c.req.json()
-    await db.query(`UPDATE $id SET done = $done`, {
-      id: new RecordId('todo', c.req.param('id')), done,
-    })
+    const body = await c.req.json()
+    const updates: string[] = []
+    const values: any[] = []
+
+    if ('done' in body) {
+      values.push(Boolean(body.done))
+      updates.push(`done = $${values.length}`)
+    }
+    if ('target_achievement' in body) {
+      values.push(normalizeTargetAchievement(body.target_achievement))
+      updates.push(`target_achievement = $${values.length}`)
+    }
+    if ('target_fc' in body) {
+      values.push(body.target_fc || null)
+      updates.push(`target_fc = $${values.length}`)
+    }
+
+    if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400)
+
+    values.push(fromRecordId(c.req.param('id'), 'todo'), fromRecordId(playerId, 'player'))
+    await query(
+      `UPDATE todo SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND player_id = $${values.length}`,
+      values,
+    )
     return c.json({ ok: true })
 })
 
 app.delete('/api/todo/:id', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    await db.query(`DELETE $id`, { id: new RecordId('todo', c.req.param('id')) })
+    await query(
+      `DELETE FROM todo WHERE id = $1 AND player_id = $2`,
+      [fromRecordId(c.req.param('id'), 'todo'), fromRecordId(playerId, 'player')],
+    )
     return c.json({ ok: true })
 })
 
@@ -573,15 +853,15 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
 app.get('/api/badge-progress', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
+    const playerKey = fromRecordId(playerId, 'player')
 
     const [scoresResult, songsResult] = await Promise.all([
-      db.query(`SELECT song, achievement, fc, sync, version FROM score WHERE player = $player`,
-               { player: new RecordId('player', playerKey) }),
-      db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+      query(`SELECT 'song:' || song_id AS song, achievement, fc, sync, version FROM score WHERE player_id = $1`,
+            [playerKey]),
+      query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
     ])
 
-    return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
+    return c.json(buildBadgeProgress(songsResult.map(publicSong), scoresResult))
 })
 
 // ==========================================
@@ -617,16 +897,20 @@ function getNextRankThreshold(achievement: number): number | null {
 app.get('/api/recommend', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
+    const playerKey = fromRecordId(playerId, 'player')
 
-    const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, chart_constant, version, fc, sync,
-    song.title AS title, song.image_name AS image_name
-    FROM score
-    WHERE chart_constant != NONE AND player = $player
-    `, { player: new RecordId('player', playerKey) })
+    const result = await query(`
+      SELECT score.id, score.achievement, score.chart_type, score.difficulty,
+        COALESCE(score.chart_constant, song.chart_constant) AS chart_constant,
+        COALESCE(score.version, song.version) AS version,
+        score.fc, score.sync, song.title AS title, song.image_name AS image_name
+      FROM score
+      JOIN song ON song.id = score.song_id
+      WHERE COALESCE(score.chart_constant, song.chart_constant) IS NOT NULL
+        AND score.player_id = $1
+    `, [playerKey])
 
-    const scores = result[0] as any[]
+    const scores = result.map(publicScore)
 
     // 算出 B50 門檻
     const withRating = scores.map(s => {
@@ -694,6 +978,212 @@ app.get('/api/recommend', async (c) => {
     return c.json({ new: newResult, old: oldResult })
 })
 
+app.post('/api/maimai-friends/observations', async (c) => {
+  try {
+    const auth = await getAuthFromToken(c)
+    if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const playerKey = await ensurePlayerExists(auth.playerId, auth.email)
+    const body = await c.req.json()
+    const friendCode = normalizeFriendCode(
+      body.friend_code
+      ?? body.friendCode
+      ?? body.friend_idx
+      ?? body.friend?.friend_code
+      ?? body.friend?.friendCode
+      ?? body.friend?.friend_idx
+      ?? body.friend?.friendIdx,
+    )
+
+    if (!friendCode) return c.json({ error: 'Missing friend code' }, 400)
+
+    const friendKey = hashFriendCode(friendCode)
+    const rawScores = Array.isArray(body.scores) ? body.scores : []
+    const scores = uniqueLastBy(
+      rawScores
+        .map((score: any) => {
+          const achievement = Number(score.friend_achievement ?? score.achievement)
+          const title = String(score.title ?? '').trim()
+          const chartType = String(score.chart_type ?? '').toUpperCase()
+          const difficulty = String(score.difficulty ?? '').toUpperCase()
+
+          if (!title || !Number.isFinite(achievement)) return null
+          if (!['STANDARD', 'DX'].includes(chartType)) return null
+          if (!['BASIC', 'ADVANCED', 'EXPERT', 'MASTER', 'REMASTER'].includes(difficulty)) return null
+
+          return {
+            title,
+            chart_type: chartType,
+            difficulty,
+            level: String(score.level ?? ''),
+            achievement,
+            fc: score.friend?.fc ?? score.fc ?? null,
+            sync: score.friend?.sync ?? score.sync ?? null,
+          }
+        })
+        .filter(Boolean) as any[],
+      (score) => `${score.title}_${score.chart_type}_${score.difficulty}`,
+    )
+
+    const friend = body.friend ?? {}
+    const rating = Number(friend.rating ?? body.rating)
+    const titles = Array.from(new Set(scores.map((score) => score.title)))
+    const songRows = titles.length
+      ? await query(`
+          SELECT id, title, chart_type, difficulty
+          FROM song
+          WHERE title = ANY($1::text[])
+        `, [titles])
+      : []
+    const songMap = new Map(songRows.map((song: any) => [
+      `${song.title}_${song.chart_type}_${song.difficulty}`,
+      song.id,
+    ]))
+
+    const records = scores
+      .map((score) => ({
+        ...score,
+        song_id: songMap.get(`${score.title}_${score.chart_type}_${score.difficulty}`),
+      }))
+      .filter((score) => score.song_id)
+
+    await transaction(async (client) => {
+      const existing = await client.query(
+        `SELECT anonymous_number FROM maimai_friend_identity WHERE friend_idx = $1 OR friend_code_hash = $1 LIMIT 1`,
+        [friendKey],
+      )
+      const anonymousNumber = existing.rows[0]?.anonymous_number
+        ?? (await client.query(`SELECT COALESCE(MAX(anonymous_number), 0) + 1 AS next FROM maimai_friend_identity`)).rows[0].next
+
+      await client.query(`
+        INSERT INTO maimai_friend_identity (
+          friend_idx, friend_code_hash, anonymous_number, display_name,
+          rating, dan_img_url, icon_img_url, last_seen_at
+        )
+        VALUES ($1, $1, $2, $3, $4, $5, $6, now())
+        ON CONFLICT (friend_idx) DO UPDATE SET
+          friend_code_hash = EXCLUDED.friend_code_hash,
+          anonymous_number = COALESCE(maimai_friend_identity.anonymous_number, EXCLUDED.anonymous_number),
+          display_name = COALESCE(EXCLUDED.display_name, maimai_friend_identity.display_name),
+          rating = COALESCE(EXCLUDED.rating, maimai_friend_identity.rating),
+          dan_img_url = COALESCE(EXCLUDED.dan_img_url, maimai_friend_identity.dan_img_url),
+          icon_img_url = COALESCE(EXCLUDED.icon_img_url, maimai_friend_identity.icon_img_url),
+          last_seen_at = now()
+      `, [
+        friendKey,
+        anonymousNumber,
+        friend.display_name ?? friend.displayName ?? null,
+        Number.isFinite(rating) ? rating : null,
+        friend.dan_img_url ?? friend.danImgUrl ?? null,
+        friend.icon_img_url ?? friend.iconImgUrl ?? null,
+      ])
+
+      const CHUNK = 200
+      for (let i = 0; i < records.length; i += CHUNK) {
+        const chunk = records.slice(i, i + CHUNK)
+        const { placeholders, values } = buildValues(chunk.map((record) => [
+          friendKey,
+          playerKey,
+          record.song_id,
+          record.difficulty,
+          record.chart_type,
+          record.level,
+          record.achievement,
+          record.fc,
+          record.sync,
+        ]))
+
+        await client.query(`
+          INSERT INTO maimai_friend_observed_score (
+            friend_idx, observer_player_id, song_id, difficulty, chart_type,
+            level, achievement, fc, sync
+          )
+          VALUES ${placeholders}
+          ON CONFLICT (friend_idx, song_id) DO UPDATE SET
+            observer_player_id = EXCLUDED.observer_player_id,
+            difficulty = EXCLUDED.difficulty,
+            chart_type = EXCLUDED.chart_type,
+            level = EXCLUDED.level,
+            achievement = EXCLUDED.achievement,
+            fc = EXCLUDED.fc,
+            sync = EXCLUDED.sync,
+            observed_at = now()
+        `, values)
+      }
+    })
+
+    return c.json({
+      ok: true,
+      friend_id: `maimai_friend:${friendKey.slice(0, 12)}`,
+      anonymous: true,
+      observed: records.length,
+      skipped: scores.length - records.length,
+    })
+  } catch (error) {
+    console.error('friend observations sync failed:', error)
+    return c.json({ error: 'Friend observations sync failed' }, 500)
+  }
+})
+
+app.get('/api/recommend/nmf', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const playerKey = fromRecordId(playerId, 'player')
+
+    const ownRows = await query(`
+      SELECT score.player_id, score.song_id, score.achievement, score.fc,
+        NULL::integer AS player_rating,
+        song.title, song.chart_type, song.difficulty, song.image_name,
+        COALESCE(score.chart_constant, song.chart_constant) AS chart_constant,
+        COALESCE(score.version, song.version) AS version
+      FROM score
+      JOIN song ON song.id = score.song_id
+      WHERE score.achievement IS NOT NULL
+        AND COALESCE(score.chart_constant, song.chart_constant) IS NOT NULL
+    `)
+    const observedRows = await query(`
+      SELECT 'maimai_friend:' || obs.friend_idx AS player_id,
+        obs.song_id, obs.achievement, obs.fc, ident.rating AS player_rating,
+        song.title, song.chart_type, song.difficulty, song.image_name,
+        song.chart_constant AS chart_constant,
+        song.version AS version
+      FROM maimai_friend_observed_score obs
+      JOIN maimai_friend_identity ident ON ident.friend_idx = obs.friend_idx
+      JOIN song ON song.id = obs.song_id
+      WHERE obs.achievement IS NOT NULL
+        AND song.chart_constant IS NOT NULL
+    `)
+    const rows = [...ownRows, ...observedRows]
+
+    const latestModel = await one(`
+      SELECT *
+      FROM recommend_model
+      WHERE id = 'latest' AND status = 'ready'
+      LIMIT 1
+    `)
+    if (latestModel) {
+      const cachedResponse = buildNmfResponseFromModel(latestModel, playerKey, rows)
+      if (cachedResponse) return c.json(cachedResponse)
+    }
+
+    return c.json({
+      ready: false,
+      reason: 'Personalized recommendations are generated by the training script. Run bun run train:recommend or wait for the CronJob to finish.',
+      model: latestModel ? {
+        source: 'cronjob',
+        status: 'ready',
+        player_missing: true,
+        trained_at: latestModel.trained_at,
+      } : {
+        source: 'cronjob',
+        status: 'missing',
+      },
+      recommendations: [],
+      candidates: [],
+      factors: [],
+    })
+})
+
 // ==========================================
 // 👥 好友功能
 // ==========================================
@@ -703,26 +1193,30 @@ app.get('/api/players/search', async (c) => {
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const q = c.req.query('q')
     if (!q) return c.json([])
-      const result = await db.query(`
-      SELECT id, username FROM player
-      WHERE string::contains(string::lowercase(username), string::lowercase($q))
-      OR string::contains(string::lowercase(email), string::lowercase($q))
-      LIMIT 10
-      `, { q })
-      return c.json(result[0])
+      const result = await query(`
+        SELECT id, username
+        FROM player
+        WHERE username ILIKE '%' || $1 || '%'
+        LIMIT 10
+      `, [q])
+      return c.json(result.map((row: any) => ({ ...row, id: toRecordId('player', row.id) })))
 })
 
 app.post('/api/friends/request', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const fromPlayerKey = fromRecordId(playerId, 'player')
     const { toPlayerId } = await c.req.json()
+    const toPlayerKey = fromRecordId(toPlayerId, 'player')
+
+    if (!toPlayerKey) return c.json({ error: 'Missing target player' }, 400)
+    if (fromPlayerKey === toPlayerKey) return c.json({ error: 'Cannot add yourself' }, 400)
+
     try {
-      await db.query(`
-      INSERT INTO friendship { from_player: $from, to_player: $to, status: 'pending' }
-      `, {
-        from: new RecordId('player', playerId.split(':')[1]),
-                     to: new RecordId('player', toPlayerId.split(':')[1]),
-      })
+      await query(`
+        INSERT INTO friendship (from_player_id, to_player_id, status)
+        VALUES ($1, $2, 'pending')
+      `, [fromPlayerKey, toPlayerKey])
       return c.json({ ok: true })
     } catch {
       return c.json({ error: 'Already exists' }, 400)
@@ -733,36 +1227,61 @@ app.post('/api/friends/accept', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const { friendshipId } = await c.req.json()
-    await db.query(`UPDATE $id SET status = 'accepted' WHERE to_player = $player`, {
-      id: new RecordId('friendship', friendshipId),
-                   player: new RecordId('player', playerId.split(':')[1]),
-    })
+    await query(
+      `UPDATE friendship SET status = 'accepted' WHERE id = $1 AND to_player_id = $2 AND status = 'pending'`,
+      [fromRecordId(friendshipId, 'friendship'), fromRecordId(playerId, 'player')],
+    )
+    return c.json({ ok: true })
+})
+
+app.post('/api/friends/reject', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+    const { friendshipId } = await c.req.json()
+    await query(
+      `DELETE FROM friendship WHERE id = $1 AND to_player_id = $2 AND status = 'pending'`,
+      [fromRecordId(friendshipId, 'friendship'), fromRecordId(playerId, 'player')],
+    )
     return c.json({ ok: true })
 })
 
 app.get('/api/friends', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
-    const result = await db.query(`
-    SELECT id,
-    from_player.username AS from_username, from_player.id AS from_id,
-    to_player.username AS to_username, to_player.id AS to_id,
-    status
-    FROM friendship
-    WHERE (from_player = $player OR to_player = $player) AND status = 'accepted'
-    `, { player: new RecordId('player', playerKey) })
-    return c.json(result[0])
+    const playerKey = fromRecordId(playerId, 'player')
+    const result = await query(`
+      SELECT friendship.id,
+        from_player.username AS from_username, from_player.id AS from_id,
+        to_player.username AS to_username, to_player.id AS to_id,
+        friendship.status
+      FROM friendship
+      JOIN player from_player ON from_player.id = friendship.from_player_id
+      JOIN player to_player ON to_player.id = friendship.to_player_id
+      WHERE (from_player_id = $1 OR to_player_id = $1) AND status = 'accepted'
+    `, [playerKey])
+    return c.json(result.map((row: any) => ({
+      ...row,
+      id: toRecordId('friendship', row.id),
+      from_id: toRecordId('player', row.from_id),
+      to_id: toRecordId('player', row.to_id),
+    })))
 })
 
 app.get('/api/friends/pending', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const result = await db.query(`
-    SELECT id, from_player.username AS from_username, from_player.id AS from_id, created_at
-    FROM friendship WHERE to_player = $player AND status = 'pending'
-    `, { player: new RecordId('player', playerId.split(':')[1]) })
-    return c.json(result[0])
+    const result = await query(`
+      SELECT friendship.id, from_player.username AS from_username,
+        from_player.id AS from_id, friendship.created_at
+      FROM friendship
+      JOIN player from_player ON from_player.id = friendship.from_player_id
+      WHERE to_player_id = $1 AND status = 'pending'
+    `, [fromRecordId(playerId, 'player')])
+    return c.json(result.map((row: any) => ({
+      ...row,
+      id: toRecordId('friendship', row.id),
+      from_id: toRecordId('player', row.from_id),
+    })))
 })
 
 
@@ -775,34 +1294,35 @@ app.get('/api/friends/pending', async (c) => {
 app.get('/api/friends/:friendId/b50', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
-    const friendId = c.req.param('friendId')
+    const playerKey = fromRecordId(playerId, 'player')
+    const friendId = fromRecordId(c.req.param('friendId'), 'player')
 
-    const friendCheck = await db.query(`
-    SELECT id FROM friendship
-    WHERE (
-      (from_player = $player AND to_player = $friend) OR
-      (from_player = $friend AND to_player = $player)
-    ) AND status = 'accepted'
-    LIMIT 1
-    `, {
-      player: new RecordId('player', playerKey),
-                                       friend: new RecordId('player', friendId),
-    })
+    const friendCheck = await query(`
+      SELECT id FROM friendship
+      WHERE (
+        (from_player_id = $1 AND to_player_id = $2) OR
+        (from_player_id = $2 AND to_player_id = $1)
+      ) AND status = 'accepted'
+      LIMIT 1
+    `, [playerKey, friendId])
 
-    if (!(friendCheck[0] as any[]).length) {
+    if (!friendCheck.length) {
       return c.json({ error: 'Not friends' }, 403)
     }
 
-    const result = await db.query(`
-    SELECT id, achievement, chart_type, difficulty, level, chart_constant, version, fc, sync,
-    song.title AS title, song.image_name AS image_name
-    FROM score
-    WHERE chart_constant != NONE AND player = $friend
-    ORDER BY achievement DESC
-    `, { friend: new RecordId('player', friendId) })
+    const result = await query(`
+      SELECT score.id, score.achievement, score.chart_type, score.difficulty, score.level,
+        COALESCE(score.chart_constant, song.chart_constant) AS chart_constant,
+        COALESCE(score.version, song.version) AS version,
+        score.fc, score.sync, song.title AS title, song.image_name AS image_name
+      FROM score
+      JOIN song ON song.id = score.song_id
+      WHERE COALESCE(score.chart_constant, song.chart_constant) IS NOT NULL
+        AND score.player_id = $1
+      ORDER BY score.achievement DESC
+    `, [friendId])
 
-    const scores = result[0] as any[]
+    const scores = result.map(publicScore)
     const withRating = scores.map(s => {
       const versionNum = parseInt(s.version) || 0
       return {
@@ -822,55 +1342,53 @@ app.get('/api/friends/:friendId/b50', async (c) => {
 app.get('/api/friends/:friendId/scores', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
-    const friendId = c.req.param('friendId')
+    const playerKey = fromRecordId(playerId, 'player')
+    const friendId = fromRecordId(c.req.param('friendId'), 'player')
 
-    const friendCheck = await db.query(`
-    SELECT id FROM friendship
-    WHERE (
-      (from_player = $player AND to_player = $friend) OR
-      (from_player = $friend AND to_player = $player)
-    ) AND status = 'accepted' LIMIT 1
-    `, {
-      player: new RecordId('player', playerKey),
-                                       friend: new RecordId('player', friendId),
-    })
-    if (!(friendCheck[0] as any[]).length) return c.json({ error: 'Not friends' }, 403)
+    const friendCheck = await query(`
+      SELECT id FROM friendship
+      WHERE (
+        (from_player_id = $1 AND to_player_id = $2) OR
+        (from_player_id = $2 AND to_player_id = $1)
+      ) AND status = 'accepted' LIMIT 1
+    `, [playerKey, friendId])
+    if (!friendCheck.length) return c.json({ error: 'Not friends' }, 403)
 
-      const result = await db.query(`
-      SELECT song.title AS title, song.chart_type AS chart_type,
-      achievement, difficulty, fc, sync, song.image_name AS image_name
-      FROM score WHERE player = $friend ORDER BY achievement DESC
-      `, { friend: new RecordId('player', friendId) })
-      return c.json(result[0])
+      const result = await query(`
+        SELECT song.title AS title, song.chart_type AS chart_type,
+          score.achievement, score.difficulty, score.fc, score.sync,
+          song.image_name AS image_name
+        FROM score
+        JOIN song ON song.id = score.song_id
+        WHERE score.player_id = $1
+        ORDER BY score.achievement DESC
+      `, [friendId])
+      return c.json(result)
 })
 
 // 好友牌子進度
 app.get('/api/friends/:friendId/badge', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
-    const playerKey = playerId.split(':')[1]
-    const friendId = c.req.param('friendId')
+    const playerKey = fromRecordId(playerId, 'player')
+    const friendId = fromRecordId(c.req.param('friendId'), 'player')
 
-    const friendCheck = await db.query(`
-    SELECT id FROM friendship
-    WHERE (
-      (from_player = $player AND to_player = $friend) OR
-      (from_player = $friend AND to_player = $player)
-    ) AND status = 'accepted' LIMIT 1
-    `, {
-      player: new RecordId('player', playerKey),
-                                       friend: new RecordId('player', friendId),
-    })
-    if (!(friendCheck[0] as any[]).length) return c.json({ error: 'Not friends' }, 403)
+    const friendCheck = await query(`
+      SELECT id FROM friendship
+      WHERE (
+        (from_player_id = $1 AND to_player_id = $2) OR
+        (from_player_id = $2 AND to_player_id = $1)
+      ) AND status = 'accepted' LIMIT 1
+    `, [playerKey, friendId])
+    if (!friendCheck.length) return c.json({ error: 'Not friends' }, 403)
 
       const [scoresResult, songsResult] = await Promise.all([
-        db.query(`SELECT song, achievement, fc, sync FROM score WHERE player = $friend`,
-                 { friend: new RecordId('player', friendId) }),
-                                                            db.query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+        query(`SELECT 'song:' || song_id AS song, achievement, fc, sync FROM score WHERE player_id = $1`,
+              [friendId]),
+        query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
       ])
 
-      return c.json(buildBadgeProgress(songsResult[0] as any[], scoresResult[0] as any[]))
+      return c.json(buildBadgeProgress(songsResult.map(publicSong), scoresResult))
 })
 
 // src/index.ts
@@ -887,7 +1405,7 @@ app.patch('/api/player/update-name', async (c) => {
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401);
 
   const { newName } = await c.req.json();
-  const trimmedName = newName?.trim();
+  const trimmedName = normalizeUsername(newName ?? '');
 
   // 驗證字數規範
   if (!trimmedName || trimmedName.length < 2 || trimmedName.length > 16) {
@@ -896,15 +1414,15 @@ app.patch('/api/player/update-name', async (c) => {
 
   try {
     // 執行資料庫更新
-    const idPart = playerId.split(':')[1];
-    await db.query(
-      'UPDATE player SET username = $newName WHERE id = $id',
-      { id: new RecordId('player', idPart), newName: trimmedName }
+    const idPart = fromRecordId(playerId, 'player');
+    await query(
+      'UPDATE player SET username = $1 WHERE id = $2',
+      [trimmedName, idPart],
     );
     return c.json({ ok: true });
   } catch (e: any) {
-    // 如果名稱重複，SurrealDB 會拋出 Index 衝突錯誤
-    if (e.message?.includes('already contains')) {
+    // PostgreSQL unique violation
+    if (e.code === '23505') {
       return c.json({ error: '此名稱已被佔用' }, 409);
     }
     return c.json({ error: '系統錯誤' }, 500);

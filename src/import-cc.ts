@@ -1,6 +1,5 @@
-import { connectDB, db } from './db'
+import { connectDB, query } from './db'
 import { initSchema } from './schema'
-import { RecordId } from 'surrealdb'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 
@@ -110,13 +109,28 @@ async function importCC() {
   await initSchema()
 
   console.log(`🗑️ 清空舊資料...`)
-  await db.query(`DELETE song`)
+  await query(`DELETE FROM song`)
 
   console.log(`🔥 正在下載國際服資料...`)
   const res = await fetch(INTL_DB_URL, { cache: 'no-store' })
   const songs = await res.json() as any[]
 
   console.log(`📊 共偵測到: ${songs.length} 首歌曲資料`)
+
+  const chartIdentityCounts = new Map<string, number>()
+  const chartIdentitySeen = new Map<string, number>()
+  for (const song of songs) {
+    if (!song.intl || song.intl === '0') continue
+    for (const track of [
+      { prefix: '',    type: 'STANDARD' },
+      { prefix: 'dx_', type: 'DX'       },
+    ]) {
+      const hasTrack = DIFFS.some(d => song[`${track.prefix}lev_${d.key}_i`])
+      if (!hasTrack) continue
+      const identity = `${song.title}_${track.type}`
+      chartIdentityCounts.set(identity, (chartIdentityCounts.get(identity) ?? 0) + 1)
+    }
+  }
 
   let songUpdated = 0
   const BATCH_SIZE = 20
@@ -140,6 +154,16 @@ async function importCC() {
     ]
 
     for (const track of tracks) {
+      const hasTrack = DIFFS.some(d => song[`${track.prefix}lev_${d.key}_i`])
+      if (!hasTrack) continue
+
+      const identity = `${song.title}_${track.type}`
+      const duplicateIndex = chartIdentitySeen.get(identity) ?? 0
+      chartIdentitySeen.set(identity, duplicateIndex + 1)
+      const duplicateSuffix = (chartIdentityCounts.get(identity) ?? 0) > 1 && duplicateIndex > 0
+        ? `_${song.sort || song.image_url || duplicateIndex}`
+        : ''
+
       // 套用 overrides.json
       const overrideKey = `${song.title}_${track.type}`
       const override = overrides[overrideKey] ?? {}
@@ -200,7 +224,7 @@ async function importCC() {
         if (!song[ccKey]) continue
 
         const finalCC    = parseFloat(song[ccKey])
-        const songKey    = `${common.title}_${track.type}_${diff.name}`
+        const songKey    = `${common.title}_${track.type}_${diff.name}${duplicateSuffix}`
         const levelString = song[`${track.prefix}lev_${diff.key}`] || ''
         const designer    = song[`${track.prefix}lev_${diff.key}_designer`] || ''
 
@@ -213,32 +237,69 @@ async function importCC() {
         }
 
         tasks.push(async () => {
-          await db.query(`
-            UPSERT $id SET
-            title = $title, artist = $artist, genre = $genre, bpm = $bpm,
-            version = $version, chart_constant = $cc, image_name = $image_name,
-            chart_type = $type, difficulty = $diff, level = $level,
-            chart_designer = $designer,
-            notes_tap = $tap, notes_hold = $hold, notes_slide = $slide,
-            notes_touch = $touch, notes_break = $break,
-            date_intl_added = $date_intl_added, date_intl_updated = $date_intl_updated,
-            date_added = $date_added, date_updated = $date_updated
-          `, {
-            id: new RecordId('song', songKey),
-            ...common,
-            cc:       finalCC,
-            type:     track.type,
-            diff:     diff.name,
-            level:    levelString,
-            designer: designer,
-            ...notes,
-          })
+          await query(`
+            INSERT INTO song (
+              id, title, artist, genre, bpm, version, chart_constant, image_name,
+              chart_type, difficulty, level, chart_designer,
+              notes_tap, notes_hold, notes_slide, notes_touch, notes_break,
+              date_intl_added, date_intl_updated, date_added, date_updated
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8,
+              $9, $10, $11, $12,
+              $13, $14, $15, $16, $17,
+              $18, $19, $20, $21
+            )
+            ON CONFLICT (id) DO UPDATE SET
+              title = EXCLUDED.title,
+              artist = EXCLUDED.artist,
+              genre = EXCLUDED.genre,
+              bpm = EXCLUDED.bpm,
+              version = EXCLUDED.version,
+              chart_constant = EXCLUDED.chart_constant,
+              image_name = EXCLUDED.image_name,
+              chart_type = EXCLUDED.chart_type,
+              difficulty = EXCLUDED.difficulty,
+              level = EXCLUDED.level,
+              chart_designer = EXCLUDED.chart_designer,
+              notes_tap = EXCLUDED.notes_tap,
+              notes_hold = EXCLUDED.notes_hold,
+              notes_slide = EXCLUDED.notes_slide,
+              notes_touch = EXCLUDED.notes_touch,
+              notes_break = EXCLUDED.notes_break,
+              date_intl_added = EXCLUDED.date_intl_added,
+              date_intl_updated = EXCLUDED.date_intl_updated,
+              date_added = EXCLUDED.date_added,
+              date_updated = EXCLUDED.date_updated
+          `, [
+            songKey,
+            common.title,
+            common.artist,
+            common.genre,
+            common.bpm,
+            common.version,
+            finalCC,
+            common.image_name,
+            track.type,
+            diff.name,
+            levelString,
+            designer,
+            notes.tap,
+            notes.hold,
+            notes.slide,
+            notes.touch,
+            notes.break,
+            common.date_intl_added,
+            common.date_intl_updated,
+            common.date_added ?? null,
+            common.date_updated ?? null,
+          ])
 
           songUpdated++
 
-          await db.query(
-            `UPDATE score SET chart_constant = $cc, version = $version WHERE song = $song`,
-            { cc: finalCC, version: common.version, song: new RecordId('song', songKey) }
+          await query(
+            `UPDATE score SET chart_constant = $1 WHERE song_id = $2`,
+            [finalCC, songKey],
           )
         })
 

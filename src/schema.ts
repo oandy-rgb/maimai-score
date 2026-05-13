@@ -1,138 +1,172 @@
 import { db } from './db'
 
 export async function initSchema() {
-    await db.query(`
-    -- ==========================================
-    -- 👤 玩家資料表 (Player)
-    -- ==========================================
-    DEFINE TABLE IF NOT EXISTS player SCHEMAFULL
-    PERMISSIONS
-    FOR select WHERE id = $auth.id
-    FOR update WHERE id = $auth.id
-    FOR create, delete NONE;
+  await db.query(`
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-    DEFINE FIELD IF NOT EXISTS email ON player TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS username ON player TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS created_at ON player TYPE datetime DEFAULT time::now();
-    DEFINE INDEX IF NOT EXISTS player_username ON player FIELDS username UNIQUE;
-    DEFINE FIELD IF NOT EXISTS dan_img_url ON player TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS icon_img_url ON player TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS in_game_name ON player TYPE option<string>;
+    CREATE TABLE IF NOT EXISTS player (
+      id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      email text UNIQUE,
+      username text UNIQUE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      dan_img_url text,
+      icon_img_url text,
+      in_game_name text
+    );
 
+    CREATE TABLE IF NOT EXISTS song (
+      id text PRIMARY KEY,
+      title text NOT NULL,
+      genre text NOT NULL DEFAULT '',
+      bpm double precision,
+      version text,
+      embedding double precision[],
+      chart_constant double precision,
+      custom_chart_constant double precision,
+      image_name text,
+      artist text,
+      chart_type text,
+      difficulty text,
+      level text,
+      chart_designer text,
+      notes_tap integer,
+      notes_hold integer,
+      notes_slide integer,
+      notes_touch integer,
+      notes_break integer,
+      aliases text[],
+      date_added text,
+      date_updated text,
+      date_intl_added text,
+      date_intl_updated text
+    );
 
-    -- ==========================================
-    -- 🎵 歌曲與譜面資料表 (Song)
-    -- ==========================================
-    DEFINE TABLE IF NOT EXISTS song SCHEMAFULL
-    PERMISSIONS
-    FOR select FULL
-    FOR create, update, delete NONE;
+    CREATE INDEX IF NOT EXISTS song_title_idx ON song (title);
+    CREATE INDEX IF NOT EXISTS song_chart_lookup_idx ON song (title, chart_type, difficulty);
 
-    DEFINE FIELD IF NOT EXISTS title ON song TYPE string;
-    DEFINE FIELD IF NOT EXISTS genre ON song TYPE string;
-    DEFINE FIELD IF NOT EXISTS bpm ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS version ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS embedding ON song TYPE option<array<float>>;
-    DEFINE FIELD IF NOT EXISTS chart_constant ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS custom_chart_constant ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS image_name ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS artist ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS chart_type ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS difficulty ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS level ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS chart_designer ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS notes_tap ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS notes_hold ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS notes_slide ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS notes_touch ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS notes_break ON song TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS aliases ON song TYPE option<array<string>>;
-    DEFINE FIELD IF NOT EXISTS date_added ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS date_updated ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS date_intl_added ON song TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS date_intl_updated ON song TYPE option<string>;
+    CREATE TABLE IF NOT EXISTS score (
+      id text PRIMARY KEY,
+      player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      song_id text NOT NULL,
+      difficulty text NOT NULL CHECK (difficulty IN ('BASIC', 'ADVANCED', 'EXPERT', 'MASTER', 'REMASTER')),
+      chart_type text NOT NULL CHECK (chart_type IN ('STANDARD', 'DX')),
+      level text NOT NULL DEFAULT '',
+      achievement double precision,
+      chart_constant double precision,
+      version text,
+      fc text,
+      sync text,
+      dx_score integer,
+      dx_total integer,
+      dx_stars integer,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (player_id, song_id)
+    );
 
-    DEFINE INDEX IF NOT EXISTS song_title ON song FIELDS title;
-    DEFINE INDEX IF NOT EXISTS song_vector ON song FIELDS embedding HNSW DIMENSION 768;
+    CREATE INDEX IF NOT EXISTS score_player_idx ON score (player_id);
+    CREATE INDEX IF NOT EXISTS score_song_idx ON score (song_id);
 
+    CREATE TABLE IF NOT EXISTS todo (
+      id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      song_key text NOT NULL,
+      title text NOT NULL,
+      chart_type text NOT NULL,
+      image_name text NOT NULL,
+      difficulty text NOT NULL,
+      target_achievement double precision CHECK (target_achievement IS NULL OR (target_achievement >= 0 AND target_achievement <= 101)),
+      target_fc text,
+      source text NOT NULL DEFAULT 'manual',
+      done boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (player_id, song_key)
+    );
 
+    CREATE INDEX IF NOT EXISTS todo_player_idx ON todo (player_id);
 
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'todo_target_achievement_range'
+      ) THEN
+        ALTER TABLE todo
+          ADD CONSTRAINT todo_target_achievement_range
+          CHECK (target_achievement IS NULL OR (target_achievement >= 0 AND target_achievement <= 101));
+      END IF;
+    END $$;
 
-    -- ==========================================
-    -- 🏆 玩家成績資料表 (Score)
-    -- ==========================================
-    DEFINE TABLE IF NOT EXISTS score SCHEMAFULL
-    PERMISSIONS
-    FOR select WHERE player = $auth.id
-    FOR create WHERE player = $auth.id
-    FOR update WHERE player = $auth.id
-    FOR delete NONE;
+    CREATE TABLE IF NOT EXISTS friendship (
+      id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      from_player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      to_player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      status text NOT NULL CHECK (status IN ('pending', 'accepted')),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (from_player_id, to_player_id)
+    );
 
-    DEFINE FIELD IF NOT EXISTS player ON score TYPE record<player>;
-    DEFINE FIELD IF NOT EXISTS song ON score TYPE record<song>;
+    CREATE INDEX IF NOT EXISTS friendship_from_idx ON friendship (from_player_id);
+    CREATE INDEX IF NOT EXISTS friendship_to_idx ON friendship (to_player_id);
 
-    DEFINE FIELD IF NOT EXISTS difficulty ON score TYPE string
-    ASSERT $value IN ['BASIC', 'ADVANCED', 'EXPERT', 'MASTER', 'REMASTER'];
+    CREATE TABLE IF NOT EXISTS maimai_friend_identity (
+      friend_idx text PRIMARY KEY,
+      friend_code_hash text UNIQUE,
+      anonymous_number integer UNIQUE,
+      display_name text,
+      rating integer,
+      dan_img_url text,
+      icon_img_url text,
+      last_seen_at timestamptz NOT NULL DEFAULT now()
+    );
 
-    DEFINE FIELD IF NOT EXISTS chart_type ON score TYPE string
-    ASSERT $value IN ['STANDARD', 'DX'];
+    CREATE TABLE IF NOT EXISTS maimai_friend_observed_score (
+      friend_idx text NOT NULL REFERENCES maimai_friend_identity(friend_idx) ON DELETE CASCADE,
+      observer_player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      song_id text NOT NULL,
+      difficulty text NOT NULL CHECK (difficulty IN ('BASIC', 'ADVANCED', 'EXPERT', 'MASTER', 'REMASTER')),
+      chart_type text NOT NULL CHECK (chart_type IN ('STANDARD', 'DX')),
+      level text NOT NULL DEFAULT '',
+      achievement double precision NOT NULL,
+      fc text,
+      sync text,
+      source text NOT NULL DEFAULT 'friend_battle',
+      observed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (friend_idx, song_id)
+    );
 
-    DEFINE FIELD IF NOT EXISTS level ON score TYPE string;
-    DEFINE FIELD IF NOT EXISTS achievement ON score TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS chart_constant ON score TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS version ON score TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS fc ON score TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS sync ON score TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS dx_score ON score TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS dx_total ON score TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS dx_stars ON score TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS updated_at ON score TYPE datetime DEFAULT time::now();
+    CREATE INDEX IF NOT EXISTS maimai_friend_observed_score_observer_idx
+      ON maimai_friend_observed_score (observer_player_id);
+    CREATE INDEX IF NOT EXISTS maimai_friend_observed_score_song_idx
+      ON maimai_friend_observed_score (song_id);
 
-    DEFINE INDEX IF NOT EXISTS score_player ON score FIELDS player;
-    DEFINE INDEX IF NOT EXISTS score_unique ON score FIELDS player, song UNIQUE;
+    ALTER TABLE maimai_friend_identity
+      ADD COLUMN IF NOT EXISTS friend_code_hash text;
+    ALTER TABLE maimai_friend_identity
+      ADD COLUMN IF NOT EXISTS anonymous_number integer;
+    ALTER TABLE maimai_friend_identity
+      DROP COLUMN IF EXISTS friend_code;
 
-    -- ==========================================
-    -- 📝 待打清單 (Todo)
-    -- ==========================================
-    DEFINE TABLE IF NOT EXISTS todo SCHEMAFULL
-    PERMISSIONS
-    FOR select WHERE player = $auth.id
-    FOR create WHERE player = $auth.id
-    FOR update WHERE player = $auth.id
-    FOR delete WHERE player = $auth.id;
+    CREATE UNIQUE INDEX IF NOT EXISTS maimai_friend_identity_code_hash_idx
+      ON maimai_friend_identity (friend_code_hash)
+      WHERE friend_code_hash IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS maimai_friend_identity_anonymous_number_idx
+      ON maimai_friend_identity (anonymous_number)
+      WHERE anonymous_number IS NOT NULL;
 
-    DEFINE FIELD IF NOT EXISTS player ON todo TYPE record<player>;
-    DEFINE FIELD IF NOT EXISTS song_key ON todo TYPE string;
-    DEFINE FIELD IF NOT EXISTS title ON todo TYPE string;
-    DEFINE FIELD IF NOT EXISTS chart_type ON todo TYPE string;
-    DEFINE FIELD IF NOT EXISTS image_name ON todo TYPE string;
-    DEFINE FIELD IF NOT EXISTS difficulty ON todo TYPE string;
-    DEFINE FIELD IF NOT EXISTS target_achievement ON todo TYPE option<number>;
-    DEFINE FIELD IF NOT EXISTS target_fc ON todo TYPE option<string>;
-    DEFINE FIELD IF NOT EXISTS source ON todo TYPE string DEFAULT 'manual';
-    DEFINE FIELD IF NOT EXISTS done ON todo TYPE bool DEFAULT false;
-    DEFINE FIELD IF NOT EXISTS created_at ON todo TYPE datetime DEFAULT time::now();
+    CREATE TABLE IF NOT EXISTS recommend_model (
+      id text PRIMARY KEY,
+      status text NOT NULL CHECK (status IN ('ready', 'failed')),
+      factors integer NOT NULL,
+      trained_at timestamptz NOT NULL DEFAULT now(),
+      input_score_count integer NOT NULL DEFAULT 0,
+      input_player_count integer NOT NULL DEFAULT 0,
+      input_song_count integer NOT NULL DEFAULT 0,
+      model jsonb NOT NULL,
+      error text
+    );
 
-    DEFINE INDEX IF NOT EXISTS todo_unique ON todo FIELDS player, song_key UNIQUE;
+    CREATE INDEX IF NOT EXISTS recommend_model_trained_at_idx
+      ON recommend_model (trained_at DESC);
+  `)
 
-    -- ==========================================
-    -- 👥 好友關係 (Friendship)
-    -- ==========================================
-    DEFINE TABLE IF NOT EXISTS friendship SCHEMAFULL
-    PERMISSIONS
-    FOR select WHERE from_player = $auth.id OR to_player = $auth.id
-    FOR create WHERE from_player = $auth.id
-    FOR update WHERE from_player = $auth.id OR to_player = $auth.id
-    FOR delete WHERE from_player = $auth.id;
-
-    DEFINE FIELD IF NOT EXISTS from_player ON friendship TYPE record<player>;
-    DEFINE FIELD IF NOT EXISTS to_player ON friendship TYPE record<player>;
-    DEFINE FIELD IF NOT EXISTS status ON friendship TYPE string
-    ASSERT $value IN ['pending', 'accepted'];
-    DEFINE FIELD IF NOT EXISTS created_at ON friendship TYPE datetime DEFAULT time::now();
-
-    DEFINE INDEX IF NOT EXISTS friendship_unique ON friendship FIELDS from_player, to_player UNIQUE;
-    `)
-
-    console.log('✅ Schema 初始化完成')
+  console.log('Schema initialized')
 }

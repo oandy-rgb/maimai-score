@@ -1,35 +1,45 @@
-// src/db.ts
-import { Surreal } from 'surrealdb'
+import { Pool, type PoolClient, type QueryResultRow } from 'pg'
 
-export const db = new Surreal()
+const connectionString =
+  process.env.DATABASE_URL ??
+  'postgres://postgres:postgres@localhost:5432/maimai'
 
-const SURREAL_URL = process.env.SURREAL_URL ?? 'ws://localhost:8000/rpc'
-
-async function connect() {
-  await db.connect(SURREAL_URL)
-  await db.signin({ username: 'root', password: 'root' })
-  await db.use({ namespace: 'maimai', database: 'maimai' })
-  console.log('✅ SurrealDB 連線成功')
-}
+export const db = new Pool({
+  connectionString,
+  max: Number(process.env.PG_POOL_MAX ?? 10),
+})
 
 export async function connectDB() {
-  await connect()
+  const client = await db.connect()
+  try {
+    await client.query('SELECT 1')
+    console.log('PostgreSQL connected')
+  } finally {
+    client.release()
+  }
+}
 
-  // 每 30 秒心跳檢測，斷線自動重連
-  setInterval(async () => {
-    try {
-      await db.query('SELECT 1')
-    } catch {
-      console.log('⚠️ SurrealDB 連線斷開，嘗試重連...')
-      try {
-        await db.close()
-      } catch {}
-      try {
-        await connect()
-        console.log('✅ SurrealDB 重連成功')
-      } catch (e) {
-        console.error('❌ SurrealDB 重連失敗:', e)
-      }
-    }
-  }, 30_000)
+export async function query<T extends QueryResultRow = any>(text: string, params: unknown[] = []) {
+  const result = await db.query<T>(text, params)
+  return result.rows
+}
+
+export async function one<T extends QueryResultRow = any>(text: string, params: unknown[] = []) {
+  const rows = await query<T>(text, params)
+  return rows[0] ?? null
+}
+
+export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
+  const client = await db.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await fn(client)
+    await client.query('COMMIT')
+    return result
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
 }
