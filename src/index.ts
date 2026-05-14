@@ -17,6 +17,10 @@ const FRIEND_CODE_PEPPER = process.env.FRIEND_CODE_PEPPER ?? process.env.JWT_SEC
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
 
 const app = new Hono()
+const SONGS_CACHE_MS = Number(process.env.SONGS_CACHE_MS ?? 10 * 60_000)
+const RECOMMEND_RESPONSE_CACHE_MS = Number(process.env.RECOMMEND_RESPONSE_CACHE_MS ?? 5 * 60_000)
+const SYNC_BODY_LIMIT_BYTES = Number(process.env.SYNC_BODY_LIMIT_BYTES ?? 5_000_000)
+const FRIEND_OBSERVATIONS_BODY_LIMIT_BYTES = Number(process.env.FRIEND_OBSERVATIONS_BODY_LIMIT_BYTES ?? 5_000_000)
 
 const toRecordId = (table: string, id: string) => `${table}:${id}`
 const fromRecordId = (id: string, table?: string) => {
@@ -71,7 +75,35 @@ function hashFriendCode(value: string) {
     .digest('hex')
 }
 
+type JsonReadResult =
+  | { ok: true, value: any }
+  | { ok: false, status: 400 | 413, error: string }
+
+async function readLimitedJson(c: any, maxBytes: number): Promise<JsonReadResult> {
+  const contentLength = Number(c.req.header('content-length') ?? 0)
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return { ok: false, status: 413, error: 'Payload too large' }
+  }
+
+  const text = await c.req.text()
+  if (new TextEncoder().encode(text).byteLength > maxBytes) {
+    return { ok: false, status: 413, error: 'Payload too large' }
+  }
+
+  try {
+    return { ok: true, value: JSON.parse(text) }
+  } catch {
+    return { ok: false, status: 400, error: 'Invalid JSON' }
+  }
+}
+
 const rateLimitBuckets = new Map<string, { count: number, resetAt: number }>()
+let songsCache: { data: any[], expiresAt: number } | null = null
+const recommendResponseCache = new Map<string, { value: any, expiresAt: number }>()
+
+function clearSongsCache() {
+  songsCache = null
+}
 
 function getClientIp(c: any) {
   const forwarded = c.req.header('cf-connecting-ip')
@@ -110,6 +142,9 @@ setInterval(() => {
   for (const [key, bucket] of rateLimitBuckets) {
     if (bucket.resetAt <= now) rateLimitBuckets.delete(key)
   }
+  for (const [key, cached] of recommendResponseCache) {
+    if (cached.expiresAt <= now) recommendResponseCache.delete(key)
+  }
 }, 60_000).unref?.()
 
 const allowedOrigins = new Set([
@@ -131,9 +166,12 @@ app.use('*', cors({
 }))
 
 app.use('/auth/google', rateLimit(10, 60_000, 'auth'))
-app.use('/api/scores/sync', rateLimit(12, 60_000, 'sync'))
-app.use('/api/*', rateLimit(120, 60_000, 'api'))
-app.use('/b50', rateLimit(60, 60_000, 'b50'))
+app.use('/api/scores/sync', rateLimit(30, 60_000, 'sync'))
+app.use('/api/maimai-friends/observations', rateLimit(15, 60_000, 'friend-observations'))
+app.use('/api/recommend/nmf', rateLimit(20, 60_000, 'recommend-nmf'))
+app.use('/api/songs', rateLimit(30, 60_000, 'songs'))
+app.use('/api/*', rateLimit(80, 60_000, 'api'))
+app.use('/b50', rateLimit(20, 60_000, 'b50'))
 
 connectDB()
 .then(() => initSchema())
@@ -180,6 +218,16 @@ async function getAuthFromToken(c: any): Promise<AuthPayload | null> {
 
 async function getPlayerFromToken(c: any): Promise<string | null> {
   return (await getAuthFromToken(c))?.playerId ?? null
+}
+
+function isAdminEmail(email?: string) {
+  const adminEmails = new Set(
+    (process.env.ADMIN_EMAILS ?? '')
+      .split(',')
+      .map(email => email.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  return !!email && adminEmails.has(email.toLowerCase())
 }
 
 function normalizeUsername(value: string) {
@@ -252,6 +300,7 @@ app.get('/api/me', async (c) => {
     username: player.username,
     in_game_name: player.in_game_name,
     display_name: player.username || player.in_game_name || player.email?.split('@')[0] || 'Player',
+    is_admin: isAdminEmail(player.email),
   })
 })
 
@@ -314,7 +363,9 @@ app.post('/api/scores/sync', async (c) => {
   const auth = await getAuthFromToken(c);
   if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401);
 
-  const body = await c.req.json();
+  const parsed = await readLimitedJson(c, SYNC_BODY_LIMIT_BYTES)
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+  const body = parsed.value
 
   try {
     const result = await processSyncJob(auth.playerId, body, auth.email)
@@ -629,6 +680,7 @@ function buildSongMap(charts: any[]) {
         id: key,
         title: chart.title,
         artist: chart.artist,
+        bpm: chart.bpm,
         image_name: chart.image_name,
         chart_type: chart.chart_type,
         aliases: chart.aliases ?? [],
@@ -665,18 +717,225 @@ function buildSongMap(charts: any[]) {
 
 app.get('/api/songs', async (c) => {
   try {
+    const now = Date.now()
+    c.header('Cache-Control', 'public, max-age=600, stale-while-revalidate=3600')
+
+    if (songsCache && songsCache.expiresAt > now) {
+      return c.json(songsCache.data)
+    }
+
     const result = await query(`
-      SELECT title, artist, image_name, chart_type, difficulty, level,
-      chart_constant, chart_designer, aliases,
-      date_intl_added, date_intl_updated, date_added, date_updated,
-      notes_tap, notes_hold, notes_slide, notes_touch, notes_break
+      SELECT song.title, song.artist, song.bpm, song.image_name, song.chart_type, song.difficulty, song.level,
+      song.chart_constant, song.chart_designer,
+      ARRAY(
+        SELECT DISTINCT alias
+        FROM unnest(COALESCE(song.aliases, '{}'::text[]) || COALESCE(approved_alias.aliases, '{}'::text[])) alias
+        WHERE alias <> ''
+        ORDER BY alias
+      ) AS aliases,
+      song.date_intl_added, song.date_intl_updated, song.date_added, song.date_updated,
+      song.notes_tap, song.notes_hold, song.notes_slide, song.notes_touch, song.notes_break
       FROM song
+      LEFT JOIN (
+        SELECT title, chart_type, array_agg(alias ORDER BY alias) AS aliases
+        FROM song_alias_suggestion
+        WHERE status = 'approved'
+        GROUP BY title, chart_type
+      ) approved_alias ON approved_alias.title = song.title AND approved_alias.chart_type = song.chart_type
     `)
     const songs = buildSongMap(result)
+    songsCache = { data: songs, expiresAt: now + SONGS_CACHE_MS }
     return c.json(songs)
   } catch (error) {
     return c.json({ error: '無法獲取歌曲資料' }, 500)
   }
+})
+
+app.post('/api/songs/aliases', async (c) => {
+  const auth = await getAuthFromToken(c)
+  if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+  if (!isAdminEmail(auth.email)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const body = await c.req.json()
+  const title = String(body.title ?? '').trim()
+  const chartType = String(body.chart_type ?? body.chartType ?? '').trim().toUpperCase()
+  const alias = String(body.alias ?? '').replace(/\s+/g, ' ').trim()
+
+  if (!title || !['STANDARD', 'DX'].includes(chartType)) {
+    return c.json({ error: 'Missing song identity' }, 400)
+  }
+  if (alias.length < 1 || alias.length > 50) {
+    return c.json({ error: 'Alias length must be 1-50 characters' }, 400)
+  }
+  if (alias.toLowerCase() === title.toLowerCase()) {
+    return c.json({ error: 'Alias is the same as title' }, 400)
+  }
+
+  const existingRows = await query(`
+    SELECT aliases
+    FROM song
+    WHERE title = $1 AND chart_type = $2
+    LIMIT 1
+  `, [title, chartType])
+
+  if (existingRows.length === 0) return c.json({ error: 'Song not found' }, 404)
+
+  const aliases = Array.isArray(existingRows[0].aliases) ? existingRows[0].aliases : []
+  const hasAlias = aliases.some((item: string) => item.toLowerCase() === alias.toLowerCase())
+  const nextAliases = hasAlias ? aliases : [...aliases, alias]
+
+  await query(`
+    UPDATE song
+    SET aliases = $3
+    WHERE title = $1 AND chart_type = $2
+  `, [title, chartType, nextAliases])
+
+  await query(`
+    INSERT INTO song_alias_suggestion (
+      title, chart_type, alias, suggested_by_player_id,
+      status, reviewed_by_player_id, reviewed_at
+    )
+    VALUES ($1, $2, $3, $4, 'approved', $4, now())
+    ON CONFLICT (title, chart_type, alias) DO UPDATE SET
+      status = 'approved',
+      reviewed_by_player_id = EXCLUDED.reviewed_by_player_id,
+      reviewed_at = now()
+  `, [title, chartType, alias, fromRecordId(auth.playerId, 'player')])
+
+  clearSongsCache()
+  return c.json({ ok: true, title, chart_type: chartType, aliases: nextAliases })
+})
+
+app.post('/api/songs/alias-suggestions', async (c) => {
+  const auth = await getAuthFromToken(c)
+  if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json()
+  const title = String(body.title ?? '').trim()
+  const chartType = String(body.chart_type ?? body.chartType ?? '').trim().toUpperCase()
+  const alias = String(body.alias ?? '').replace(/\s+/g, ' ').trim()
+
+  if (!title || !['STANDARD', 'DX'].includes(chartType)) {
+    return c.json({ error: 'Missing song identity' }, 400)
+  }
+  if (alias.length < 1 || alias.length > 50) {
+    return c.json({ error: 'Alias length must be 1-50 characters' }, 400)
+  }
+  if (alias.toLowerCase() === title.toLowerCase()) {
+    return c.json({ error: 'Alias is the same as title' }, 400)
+  }
+
+  const song = await one(`
+    SELECT aliases
+    FROM song
+    WHERE title = $1 AND chart_type = $2
+    LIMIT 1
+  `, [title, chartType])
+
+  if (!song) return c.json({ error: 'Song not found' }, 404)
+
+  const aliases = Array.isArray(song.aliases) ? song.aliases : []
+  if (aliases.some((item: string) => item.toLowerCase() === alias.toLowerCase())) {
+    return c.json({ ok: true, status: 'already_exists' })
+  }
+
+  const inserted = await one(`
+    INSERT INTO song_alias_suggestion (title, chart_type, alias, suggested_by_player_id)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (title, chart_type, alias) DO UPDATE SET
+      suggested_by_player_id = COALESCE(song_alias_suggestion.suggested_by_player_id, EXCLUDED.suggested_by_player_id)
+    RETURNING id, status
+  `, [title, chartType, alias, fromRecordId(auth.playerId, 'player')])
+
+  return c.json({ ok: true, id: toRecordId('song_alias_suggestion', inserted.id), status: inserted.status })
+})
+
+app.get('/api/admin/song-alias-suggestions', async (c) => {
+  const auth = await getAuthFromToken(c)
+  if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
+  if (!isAdminEmail(auth.email)) return c.json({ error: 'Forbidden' }, 403)
+
+  const status = c.req.query('status') ?? 'pending'
+  if (!['pending', 'approved', 'rejected', 'all'].includes(status)) {
+    return c.json({ error: 'Invalid status' }, 400)
+  }
+
+  const rows = await query(`
+    SELECT sug.id, sug.title, sug.chart_type, sug.alias, sug.status,
+      sug.created_at, sug.reviewed_at, player.email AS suggested_by_email
+    FROM song_alias_suggestion sug
+    LEFT JOIN player ON player.id = sug.suggested_by_player_id
+    WHERE $1 = 'all' OR sug.status = $1
+    ORDER BY sug.created_at DESC
+    LIMIT 200
+  `, [status])
+
+  return c.json(rows.map((row: any) => ({ ...row, id: toRecordId('song_alias_suggestion', row.id) })))
+})
+
+app.post('/api/admin/song-alias-suggestions/:id/review', async (c) => {
+  const auth = await getAuthFromToken(c)
+  if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
+  if (!isAdminEmail(auth.email)) return c.json({ error: 'Forbidden' }, 403)
+
+  const id = fromRecordId(c.req.param('id'), 'song_alias_suggestion')
+  const body = await c.req.json()
+  const action = String(body.action ?? '').trim()
+  if (!['approve', 'reject'].includes(action)) return c.json({ error: 'Invalid action' }, 400)
+
+  const suggestion = await one(`
+    SELECT id, title, chart_type, alias, status
+    FROM song_alias_suggestion
+    WHERE id = $1
+    LIMIT 1
+  `, [id])
+  if (!suggestion) return c.json({ error: 'Suggestion not found' }, 404)
+
+  if (action === 'reject') {
+    await query(`
+      UPDATE song_alias_suggestion
+      SET status = 'rejected', reviewed_by_player_id = $2, reviewed_at = now()
+      WHERE id = $1
+    `, [id, fromRecordId(auth.playerId, 'player')])
+    return c.json({ ok: true, status: 'rejected' })
+  }
+
+  const song = await one(`
+    SELECT aliases
+    FROM song
+    WHERE title = $1 AND chart_type = $2
+    LIMIT 1
+  `, [suggestion.title, suggestion.chart_type])
+  if (!song) return c.json({ error: 'Song not found' }, 404)
+
+  const aliases = Array.isArray(song.aliases) ? song.aliases : []
+  const hasAlias = aliases.some((item: string) => item.toLowerCase() === suggestion.alias.toLowerCase())
+  const nextAliases = hasAlias ? aliases : [...aliases, suggestion.alias]
+
+  await transaction(async (client) => {
+    await client.query(`
+      UPDATE song
+      SET aliases = $3
+      WHERE title = $1 AND chart_type = $2
+    `, [suggestion.title, suggestion.chart_type, nextAliases])
+    await client.query(`
+      UPDATE song_alias_suggestion
+      SET status = 'approved', reviewed_by_player_id = $2, reviewed_at = now()
+      WHERE id = $1
+    `, [id, fromRecordId(auth.playerId, 'player')])
+  })
+
+  clearSongsCache()
+  return c.json({
+    ok: true,
+    status: 'approved',
+    title: suggestion.title,
+    chart_type: suggestion.chart_type,
+    aliases: nextAliases,
+  })
 })
 
 
@@ -828,6 +1087,7 @@ function buildBadgeProgress(allCharts: any[], scores: any[]) {
         title:      chart.title,
         chart_type: chart.chart_type,
         image_name: chart.image_name,
+        chart_constant: chart.chart_constant,
         achievement,
         fc:       fcVal,
         sync:     syncVal,
@@ -858,7 +1118,7 @@ app.get('/api/badge-progress', async (c) => {
     const [scoresResult, songsResult] = await Promise.all([
       query(`SELECT 'song:' || song_id AS song, achievement, fc, sync, version FROM score WHERE player_id = $1`,
             [playerKey]),
-      query(`SELECT id, title, chart_type, difficulty, version, image_name FROM song WHERE difficulty != 'REMASTER'`),
+      query(`SELECT id, title, chart_type, difficulty, version, image_name, chart_constant FROM song WHERE difficulty != 'REMASTER'`),
     ])
 
     return c.json(buildBadgeProgress(songsResult.map(publicSong), scoresResult))
@@ -984,7 +1244,9 @@ app.post('/api/maimai-friends/observations', async (c) => {
     if (!auth?.playerId) return c.json({ error: 'Unauthorized' }, 401)
 
     const playerKey = await ensurePlayerExists(auth.playerId, auth.email)
-    const body = await c.req.json()
+    const parsed = await readLimitedJson(c, FRIEND_OBSERVATIONS_BODY_LIMIT_BYTES)
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+    const body = parsed.value
     const friendCode = normalizeFriendCode(
       body.friend_code
       ?? body.friendCode
@@ -1129,6 +1391,10 @@ app.get('/api/recommend/nmf', async (c) => {
   const playerId = await getPlayerFromToken(c)
   if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
     const playerKey = fromRecordId(playerId, 'player')
+    const cached = recommendResponseCache.get(playerKey)
+    if (cached && cached.expiresAt > Date.now()) {
+      return c.json(cached.value)
+    }
 
     const ownRows = await query(`
       SELECT score.player_id, score.song_id, score.achievement, score.fc,
@@ -1163,7 +1429,13 @@ app.get('/api/recommend/nmf', async (c) => {
     `)
     if (latestModel) {
       const cachedResponse = buildNmfResponseFromModel(latestModel, playerKey, rows)
-      if (cachedResponse) return c.json(cachedResponse)
+      if (cachedResponse) {
+        recommendResponseCache.set(playerKey, {
+          value: cachedResponse,
+          expiresAt: Date.now() + RECOMMEND_RESPONSE_CACHE_MS,
+        })
+        return c.json(cachedResponse)
+      }
     }
 
     return c.json({
@@ -1282,6 +1554,22 @@ app.get('/api/friends/pending', async (c) => {
       id: toRecordId('friendship', row.id),
       from_id: toRecordId('player', row.from_id),
     })))
+})
+
+app.delete('/api/friends/:friendshipId', async (c) => {
+  const playerId = await getPlayerFromToken(c)
+  if (!playerId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const result = await query(`
+    DELETE FROM friendship
+    WHERE id = $1
+      AND status = 'accepted'
+      AND (from_player_id = $2 OR to_player_id = $2)
+    RETURNING id
+  `, [fromRecordId(c.req.param('friendshipId'), 'friendship'), fromRecordId(playerId, 'player')])
+
+  if (!result.length) return c.json({ error: 'Friendship not found' }, 404)
+  return c.json({ ok: true })
 })
 
 

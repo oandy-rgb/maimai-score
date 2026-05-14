@@ -44,6 +44,22 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS song_title_idx ON song (title);
     CREATE INDEX IF NOT EXISTS song_chart_lookup_idx ON song (title, chart_type, difficulty);
 
+    CREATE TABLE IF NOT EXISTS song_alias_suggestion (
+      id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      title text NOT NULL,
+      chart_type text NOT NULL CHECK (chart_type IN ('STANDARD', 'DX')),
+      alias text NOT NULL,
+      suggested_by_player_id text REFERENCES player(id) ON DELETE SET NULL,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      reviewed_by_player_id text REFERENCES player(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      reviewed_at timestamptz,
+      UNIQUE (title, chart_type, alias)
+    );
+
+    CREATE INDEX IF NOT EXISTS song_alias_suggestion_status_idx
+      ON song_alias_suggestion (status, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS score (
       id text PRIMARY KEY,
       player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
