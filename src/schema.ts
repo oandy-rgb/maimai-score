@@ -1,4 +1,4 @@
-import { db } from './db'
+import { db } from "./db";
 
 export async function initSchema() {
   await db.query(`
@@ -41,6 +41,8 @@ export async function initSchema() {
       date_intl_updated text
     );
 
+
+
     CREATE INDEX IF NOT EXISTS song_title_idx ON song (title);
     CREATE INDEX IF NOT EXISTS song_chart_lookup_idx ON song (title, chart_type, difficulty);
 
@@ -77,6 +79,24 @@ export async function initSchema() {
       dx_stars integer,
       updated_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (player_id, song_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS score_history (
+      id text PRIMARY KEY,
+      player_id text NOT NULL REFERENCES player(id) ON DELETE CASCADE,
+      song_id text NOT NULL,
+      difficulty text NOT NULL CHECK (difficulty IN ('BASIC', 'ADVANCED', 'EXPERT', 'MASTER', 'REMASTER')),
+      chart_type text NOT NULL CHECK (chart_type IN ('STANDARD', 'DX')),
+      level text NOT NULL DEFAULT '',
+      achievement double precision,
+      chart_constant double precision,
+      version text,
+      fc text,
+      sync text,
+      dx_score integer,
+      dx_total integer,
+      dx_stars integer,
+      synced_at timestamptz NOT NULL DEFAULT now()
     );
 
     CREATE INDEX IF NOT EXISTS score_player_idx ON score (player_id);
@@ -182,7 +202,7 @@ export async function initSchema() {
 
     CREATE INDEX IF NOT EXISTS recommend_model_trained_at_idx
       ON recommend_model (trained_at DESC);
-  `)
+  `);
 
-  console.log('Schema initialized')
+  console.log("Schema initialized");
 }
